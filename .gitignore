@@ -1,0 +1,16 @@
+/target/
+.omp/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+# Local cookie jars and the dedicated refresh SSH key — never commit
+cookies/
+cookies.txt
+cookies.txt.*
+.cookies-*
+**/.cookies-*
+.secrets/

@@ -1,0 +1,16 @@
+[package]
+name = "maksut"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+teloxide = { version = "0.17", default-features = false, features = ["rustls", "ctrlc_handler"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "fs", "sync", "io-util", "net"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+url = "2"
+tempfile = "3"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde_json = "1"
+sha2 = "0.10"
