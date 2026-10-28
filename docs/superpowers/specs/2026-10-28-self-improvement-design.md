@@ -19,13 +19,13 @@ Any user can ask Maksut to improve itself; the owner approves the plan and the d
 
 ### Bot
 
-- Any non-bot user can propose a natural-language feature in a private chat or an enabled group; non-owners must address the bot, while the owner may dictate without the prefix, for example «давай ебанем фичу ...». `/improve <goal>` remains an owner-only explicit shortcut.
-- Deterministic parser, not an LLM tool. A model tool would let a malicious quoted message start code execution.
+- Any non-bot user can propose a feature in an enabled group; non-owners must address the bot, while the owner may also use the natural chat in private. `/improve <goal>` remains an owner-only explicit shortcut.
+- Feature intent is not matched by keywords. The chat model decides semantically and calls the `propose_feature` tool with the goal. The tool only validates and writes a plan task; it cannot approve, edit code, or deploy. This keeps arbitrary wording working without giving the model a code-execution path.
 - A natural request writes a plan task (`stage: "plan"`) and asks the planner/reviewer for a spec and review. It does not implement code directly. The task records `proposed_by`; non-owner proposals notify the owner in the owner private chat. Only the owner can approve, refine, or reject.
 - The bot polls the outbox and sends `planned`, `proposed`, `deployed`, and `failed` updates to the task notification chat (owner private for non-owner proposals). A planned message is only a short issue link plus inline «Делаем» / «В помойку» buttons. A key appearing in output is withheld and marked as notified, never sent to Telegram.
 - Writes an atomic JSON task to the shared `self-improve/inbox/` directory:
   `{"id":"<uuid>","requested_by":<owner id>,"proposed_by":<sender id>,"source_chat_id":<origin>,"chat_id":<notification chat>,"goal":"...","created_at":<unix>}`.
-- Rejects goals longer than 2000 characters. `/improve` commands remain owner-only; plain-language proposals accept any non-bot sender.
+- Rejects goals longer than 2000 characters. `/improve` commands remain owner-only; the `propose_feature` tool accepts any non-bot sender and queues only a reviewable plan.
 - Polls `self-improve/outbox/` and reports status to the owner:
   `planning`, `planned`, `running`, `proposed`, `deployed`, `failed`, `rejected`.
 - Natural replies map to the latest pending task: «делаем»/«погнали»/«давай» approves the plan or the deploy proposal, «доработаем ...» creates a revised plan, «нет» rejects it.
@@ -79,7 +79,7 @@ The orchestrator has no model calls and no shell strings built from chat text. A
 ## Flow
 
 1. A user says «давай ебанем фичу ...» in the private chat or an enabled group where the bot is addressed.
-2. Bot validates the sender, queues a `plan` task with `proposed_by`, and acknowledges it; a non-owner proposal is sent to the owner private chat.
+2. The chat model calls `propose_feature`; the tool validates the sender, queues a `plan` task with `proposed_by`, and acknowledges it; a non-owner proposal is sent to the owner private chat.
 3. Orchestrator runs the read-only planner and reviewer, then writes `planned`.
 4. Bot sends a short link to the issue with inline «Делаем» / «В помойку» buttons.
 5. Owner presses «Делаем» (or answers «делаем» / `/improve approve <id>`) to approve the plan, «доработаем ...» to revise it, or «В помойку» / «нет» to reject it.
@@ -90,8 +90,8 @@ The orchestrator has no model calls and no shell strings built from chat text. A
 
 ## Security rules
 
-- Any non-bot user may propose; only `OWNER_ID` may approve a plan or deploy. In a group non-owners must address the bot; the owner may omit the prefix for a feature request. The parser is deterministic, and no model tool can enqueue or approve a task.
-- A model tool call or a memory entry cannot enqueue a task; a non-owner message can propose but cannot approve.
+- Any non-bot user may propose; only `OWNER_ID` may approve a plan or deploy. In a group non-owners must address the bot; the owner may use private chat.
+- The only write-capable model tool is `propose_feature`: it can enqueue a plan and nothing else. It cannot approve, edit, execute, or deploy. A non-owner can propose but cannot approve. Memory entries cannot enqueue.
 - The implementer cannot read `.env`, `.secrets`, SSH keys, the Docker socket, or the host home.
 - The implementer cannot deploy; the deploy script is agent-free.
 - Diff guard rejects changes to `docs/communication-guide.md`, `AGENTS.md`, `.env`, `.secrets`, deploy scripts, and paths outside the repository.

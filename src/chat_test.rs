@@ -329,7 +329,7 @@ async fn non_owner_is_readonly_without_sticker_tool() {
     assert!(!tools.iter().any(|tool| tool["function"]["name"] == "find_stickers"));
     assert!(first["messages"].as_array().unwrap().iter()
         .any(|message| message["role"] == "system"
-            && message["content"].as_str().unwrap().contains("только режим чтения")));
+            && message["content"].as_str().unwrap().contains("web_search и propose_feature")));
     let second = body_of(&requests[1]);
     let tool = second["messages"].as_array().unwrap().iter()
         .find(|message| message["role"] == "tool").unwrap();
@@ -572,5 +572,29 @@ async fn explicit_add_packs_request_still_sends_an_existing_sticker() {
     let reply = chat_reply(&config, &pool, &StickerReplies::for_tests(), &catalog, ChatId(1), UserId(2), "tester", 0, true, "ну добавь себе пару девочек", None).await.unwrap();
     assert_eq!(reply.sticker.as_ref().map(|id| id.0.as_str()), Some("girl"));
     assert_eq!(reply.text, "паки добавляет владелец");
+    llm.task.abort();
+}
+
+#[tokio::test]
+async fn chat_reply_queues_a_feature_through_the_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = open_database(&format!("sqlite://{}", dir.path().join("state.db").display())).await.unwrap();
+    let llm = mock_server(vec![
+        r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"propose_feature","arguments":"{\"goal\":\"разреши ходить по сайтам\"}"}}]}}]}"#.into(),
+        r#"{"choices":[{"message":{"role":"assistant","content":"записал"}}]}"#.into(),
+    ]).await;
+    let config = ChatConfig::new(llm.url.clone(), "key".into(), "deepseek-v4.1-flash".into(), llm.url.clone(), SearchProvider::DuckDuckGo, None);
+    let proposal = FeatureProposal { dir: dir.path().join("self-improve"), owner_id: UserId(2) };
+    let reply = chat_reply_with_proposal(
+        &config, &pool, &StickerReplies::for_tests(), &StickerCatalog::default(),
+        ChatId(1), UserId(2), "tester", 5, true,
+        "разреши себе ходить по сайтам", None, Some(&proposal),
+    ).await.unwrap();
+    assert_eq!(reply.text, "записал");
+    let files: Vec<_> = std::fs::read_dir(proposal.dir.join("inbox")).unwrap().filter_map(Result::ok).collect();
+    assert_eq!(files.len(), 1);
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+    assert_eq!(value["goal"], "разреши ходить по сайтам");
+    assert_eq!(value["proposed_by"], 2);
     llm.task.abort();
 }

@@ -78,16 +78,17 @@ async fn improvement_goal_starting_with_approve_is_not_a_subcommand() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn natural_feature_request_queues_a_plan() {
+async fn queue_feature_creates_a_plan() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
-    let bot = Bot::new("123:dummy");
-    let text = "давай ебанем такую-то фичу";
-    assert!(crate::self_improve::handle_natural_improvement(&bot, &message(10, "private", cfg.owner_id.0, text), &cfg, text).await);
-    let inbox = cfg.self_improve_dir.join("inbox");
-    let files: Vec<_> = std::fs::read_dir(&inbox).unwrap().filter_map(Result::ok).collect();
+    let id = crate::self_improve::queue_feature(
+        &cfg.self_improve_dir, cfg.owner_id, 10, cfg.owner_id, "Owner", 77,
+        "давай ебанем такую-то фичу",
+    ).unwrap();
+    let files: Vec<_> = std::fs::read_dir(cfg.self_improve_dir.join("inbox")).unwrap().filter_map(Result::ok).collect();
     assert_eq!(files.len(), 1);
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();
+    assert_eq!(value["id"], id);
     assert_eq!(value["stage"], "plan");
     assert_eq!(value["requested_by"], cfg.owner_id.0);
     assert_eq!(value["chat_id"], 10);
@@ -135,8 +136,10 @@ async fn anyone_can_propose_a_feature_but_only_the_owner_approves() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
     let bot = Bot::new("123:dummy");
-    let text = "давай ебанем фичу: добавь кнопку";
-    assert!(crate::self_improve::handle_natural_improvement(&bot, &message(10, "private", 2, text), &cfg, text).await);
+    crate::self_improve::queue_feature(
+        &cfg.self_improve_dir, cfg.owner_id, 10, UserId(2), "tester", 77,
+        "давай ебанем фичу: добавь кнопку",
+    ).unwrap();
     let files: Vec<_> = std::fs::read_dir(cfg.self_improve_dir.join("inbox")).unwrap().filter_map(Result::ok).collect();
     assert_eq!(files.len(), 1);
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(files[0].path()).unwrap()).unwrap();

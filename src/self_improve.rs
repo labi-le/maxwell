@@ -43,36 +43,6 @@ fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Owner wording that means "make this a real change", not a question about
-/// the bot. It deliberately requires both an action and a feature-shaped noun;
-/// a bare "сделай" still goes to the normal chat.
-fn feature_goal(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.starts_with('/') {
-        return None;
-    }
-    let lower = trimmed.to_lowercase();
-    if lower.contains("стикер")
-        || ["не надо", "не делай", "не хочу", "отстань", "не трогай"].iter().any(|word| lower.contains(word))
-    {
-        return None;
-    }
-    let action = ["сдела", "добав", "запил", "замут", "внедр", "пофикс", "улучш", "науч",
-        "разреш", "давай", "хочу", "надо", "неплохо", "должен", "должна"];
-    let feature = [
-        "фич", "функци", "возможност", "самоулучш", "self-improve", "умел", "научи",
-        "сделай чтобы", "хочу чтобы", "надо чтобы", "неплохо бы", "команд", "баг", "ошибк",
-        "проблем", "боту", "бота", "максут", "кнопк", "меню", "памят",
-        "сайт", "страниц", "браузер", "клик", "омп", "инструмент",
-    ];
-    let has_action = action.iter().any(|word| lower.contains(word));
-    let has_feature = feature.iter().any(|word| lower.contains(word))
-        || (lower.contains("ответ")
-            && ["улучш", "сдела", "добав", "науч", "передел", "пофикс"]
-                .iter().any(|word| lower.contains(word)));
-    (has_action && has_feature).then(|| trimmed.to_owned())
-}
-
 fn approval_intent(text: &str) -> bool {
     let lower = text.trim().to_lowercase();
     let words: Vec<&str> = lower.split(|ch: char| !ch.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
@@ -134,6 +104,32 @@ fn queue_plan(
     });
     atomic_write(&dir.join("inbox").join(format!("{id}.json")), task.to_string().as_bytes())?;
     Ok(id)
+}
+
+/// Queue a feature request from the model's propose_feature tool. The tool
+/// only creates a plan; approval and execution stay with the owner.
+pub(crate) fn queue_feature(
+    dir: &Path,
+    owner: UserId,
+    source_chat_id: i64,
+    proposed_by: UserId,
+    proposer: &str,
+    message_id: i32,
+    goal: &str,
+) -> Result<String, String> {
+    let goal = goal.trim();
+    if goal.is_empty() {
+        return Err("пустая заявка".to_owned());
+    }
+    if goal.chars().count() > MAX_GOAL_CHARS {
+        return Err("заявка слишком длинная".to_owned());
+    }
+    if proposed_by != owner && has_pending_proposal(dir, proposed_by) {
+        return Err("уже есть активная заявка".to_owned());
+    }
+    let notify_chat = if proposed_by == owner { source_chat_id } else { owner.0 as i64 };
+    queue_plan(dir, owner, notify_chat, source_chat_id, proposed_by, proposer, message_id, goal, None, "", "", "")
+        .map_err(|_| "не смог поставить план в очередь".to_owned())
 }
 
 fn latest_pending(dir: &Path, chat_id: i64) -> Option<Value> {
@@ -244,9 +240,8 @@ async fn send_quiet(bot: &Bot, chat_id: ChatId, text: &str) {
     let _ = bot.send_message(chat_id, text).disable_notification(true).await;
 }
 
-/// Handles an owner's plain-language feature request, plan approval,
-/// refinement, or rejection. Returns true when the message belonged to the
-/// improvement flow and normal chat must not answer it.
+/// Handles a pending plan's approval, refinement, or rejection, plus status
+/// questions. Feature requests themselves arrive through the model tool.
 pub(crate) async fn handle_natural_improvement(
     bot: &Bot,
     message: &Message,
@@ -257,6 +252,7 @@ pub(crate) async fn handle_natural_improvement(
         return false;
     };
     let owner = sender.id == cfg.owner_id;
+    let proposer = sender.username.clone().unwrap_or_else(|| sender.first_name.clone());
     let private = message.chat.is_private();
     if !private && !message.chat.is_group() && !message.chat.is_supergroup() {
         return false;
@@ -274,40 +270,9 @@ pub(crate) async fn handle_natural_improvement(
         Some(prompt) => prompt,
         // The owner may dictate a feature or answer a pending plan in a group
         // without prefixing the bot name. Others still have to address it.
-        None if owner && (feature_goal(text).is_some() || pending.is_some() || (status_question(text) && active.is_some())) => text.trim().to_owned(),
+        None if owner && (pending.is_some() || (status_question(text) && active.is_some())) => text.trim().to_owned(),
         None => return false,
     };
-    let goal = feature_goal(&prompt);
-    let proposer = sender.username.clone().unwrap_or_else(|| sender.first_name.clone());
-
-    if let Some(goal) = goal {
-        // A proposer can start a new plan, but only the owner can refine or
-        // approve an existing one.
-        if !owner && has_pending_proposal(&dir, sender.id) {
-            send_quiet(bot, message.chat.id, "уже есть активная заявка, дождись решения владельца").await;
-            return true;
-        }
-        let notify_chat = if owner { message.chat.id.0 } else { cfg.owner_id.0 as i64 };
-        let previous = pending.as_ref().filter(|_| owner && refinement_intent(&prompt));
-        if let Some(value) = previous {
-            let old_id = value.get("id").and_then(Value::as_str).unwrap_or("");
-            let _ = atomic_write(&dir.join("rejections").join(format!("{old_id}.json")), b"reject");
-            let previous_spec = value.get("spec").and_then(Value::as_str).unwrap_or("");
-            let previous_review = value.get("review").and_then(Value::as_str).unwrap_or("");
-            match queue_plan(&dir, cfg.owner_id, notify_chat, message.chat.id.0, sender.id, &proposer, message.id.0, &goal, (!old_id.is_empty()).then_some(old_id), &prompt, previous_spec, previous_review) {
-                Ok(id) => send_quiet(bot, message.chat.id, &format!("принял, переделываю план #{id}")).await,
-                Err(_) => send_quiet(bot, message.chat.id, "не смог поставить план в очередь").await,
-            }
-            return true;
-        }
-        match queue_plan(&dir, cfg.owner_id, notify_chat, message.chat.id.0, sender.id, &proposer, message.id.0, &goal, None, "", "", "") {
-            Ok(id) if owner => send_quiet(bot, message.chat.id, &format!("принял, думаю над планом #{id}")).await,
-            Ok(_) => send_quiet(bot, message.chat.id, "принял, передал владельцу на план").await,
-            Err(_) => send_quiet(bot, message.chat.id, "не смог поставить план в очередь").await,
-        }
-        return true;
-    }
-
     if owner {
         if let Some(value) = active.as_ref() {
             let status = value.get("status").and_then(Value::as_str).unwrap_or("");
@@ -656,12 +621,6 @@ mod tests {
         assert!(labels.contains("В помойку"));
         assert!(!labels.contains('✅'));
         assert!(!labels.contains('🗑'));
-    }
-
-    #[test]
-    fn feature_goal_understands_permission_to_use_sites() {
-        assert!(feature_goal("давай разрешим тебе ходить по сайтам и кликать как в омп это сделано").is_some());
-        assert!(feature_goal("надо ответить").is_none());
     }
 
     #[test]
