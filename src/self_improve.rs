@@ -174,7 +174,7 @@ fn latest_active(dir: &Path, chat_id: i64) -> Option<Value> {
         .filter_map(|entry| read_json(&entry.path()))
         .filter(|value| {
             value.get("chat_id").and_then(Value::as_i64) == Some(chat_id)
-                && matches!(value.get("status").and_then(Value::as_str), Some("planning" | "planned" | "proposed"))
+                && matches!(value.get("status").and_then(Value::as_str), Some("planning" | "planned" | "proposed" | "failed"))
         })
         .max_by_key(|value| value.get("created_at").and_then(Value::as_i64).unwrap_or(0))
 }
@@ -185,7 +185,7 @@ fn latest_active_any(dir: &Path, owner: UserId) -> Option<Value> {
         .filter_map(|entry| read_json(&entry.path()))
         .filter(|value| {
             value.get("requested_by").and_then(Value::as_i64) == Some(owner.0 as i64)
-                && matches!(value.get("status").and_then(Value::as_str), Some("planning" | "planned" | "proposed"))
+                && matches!(value.get("status").and_then(Value::as_str), Some("planning" | "planned" | "proposed" | "failed"))
         })
         .max_by_key(|value| value.get("created_at").and_then(Value::as_i64).unwrap_or(0))
 }
@@ -217,6 +217,10 @@ fn plan_wait_text(value: &Value) -> String {
             }
         }
         "proposed" => format!("план #{id} готов, ждёт подтверждения деплоя"),
+        "failed" => {
+            let summary = value.get("summary").and_then(Value::as_str).unwrap_or("не получилось");
+            format!("план #{id} не получился: {summary}")
+        }
         _ => format!("план #{id}: {status}"),
     }
 }
@@ -307,7 +311,7 @@ pub(crate) async fn handle_natural_improvement(
     if owner {
         if let Some(value) = active.as_ref() {
             let status = value.get("status").and_then(Value::as_str).unwrap_or("");
-            let waiting_on_plan = status == "planning"
+            let waiting_on_plan = matches!(status, "planning" | "failed")
                 && (approval_intent(&prompt) || rejection_intent(&prompt) || refinement_intent(&prompt));
             if status_question(&prompt) || waiting_on_plan {
                 send_quiet(bot, message.chat.id, &plan_wait_text(value)).await;

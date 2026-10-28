@@ -29,7 +29,8 @@ PLAN_THINKING = os.environ.get("SELF_IMPROVE_PLAN_THINKING", "high")
 GITHUB_REPO = os.environ.get("SELF_IMPROVE_GITHUB_REPO", "labi-le/maxwell")
 GH = os.environ.get("SELF_IMPROVE_GH", shutil.which("gh") or "gh")
 IMPLEMENTER_TIMEOUT = int(os.environ.get("SELF_IMPROVE_TIMEOUT", "900"))
-PLAN_TIMEOUT = int(os.environ.get("SELF_IMPROVE_PLAN_TIMEOUT", "600"))
+PLAN_TIMEOUT = int(os.environ.get("SELF_IMPROVE_PLAN_TIMEOUT", "900"))
+PLAN_REVIEW_THINKING = os.environ.get("SELF_IMPROVE_PLAN_REVIEW_THINKING", "medium")
 TEST_TIMEOUT = int(os.environ.get("SELF_IMPROVE_TEST_TIMEOUT", "900"))
 POLL_SECONDS = 5
 INTERNAL_NET = "maksut-self-improve-internal"
@@ -410,11 +411,12 @@ def plan_task(task: dict) -> None:
     spec = spec[-24000:]
     review_ok, review = run_agent(
         task, worktree, reviewer_prompt(task, spec), "read,grep,glob",
-        PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "reviewer", PLAN_THINKING,
+        PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "reviewer", PLAN_REVIEW_THINKING,
     )
     shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
     if not review_ok or not review.strip():
-        status(task, "failed", "reviewer failed", stage="plan", base=base)
+        reason = "reviewer timeout" if review.strip() == "reviewer timeout" else "reviewer failed"
+        status(task, "failed", reason, stage="plan", base=base)
         return
     if key and key in review:
         status(task, "failed", "credential appeared in reviewer output", stage="plan", base=base)
