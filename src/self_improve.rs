@@ -276,7 +276,9 @@ pub(crate) async fn handle_natural_improvement(
     if owner {
         if let Some(value) = active.as_ref() {
             let status = value.get("status").and_then(Value::as_str).unwrap_or("");
+            let short_reply = prompt.split_whitespace().count() <= 2;
             let waiting_on_plan = matches!(status, "planning" | "failed")
+                && short_reply
                 && (approval_intent(&prompt) || rejection_intent(&prompt) || refinement_intent(&prompt));
             if status_question(&prompt) || waiting_on_plan {
                 send_quiet(bot, message.chat.id, &plan_wait_text(value)).await;

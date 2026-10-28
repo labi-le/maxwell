@@ -233,3 +233,17 @@ async fn owner_status_question_reports_a_planning_task() {
     assert!(crate::self_improve::status_question("как там план?"));
     assert!(!crate::self_improve::status_question("сколько стоит билет"));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_feature_phrase_is_not_mistaken_for_plan_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
+    let bot = Bot::new("123:dummy");
+    std::fs::create_dir_all(cfg.self_improve_dir.join("outbox")).unwrap();
+    std::fs::write(cfg.self_improve_dir.join("outbox").join("plan-4.json"),
+        format!(r#"{{"id":"plan-4","status":"planning","chat_id":{},"requested_by":{},"goal":"x","created_at":1}}"#,
+            cfg.owner_id.0, cfg.owner_id.0)).unwrap();
+    let text = "давай ебанем фичу: разрешим тебе ходить по сайтам";
+    assert!(!crate::self_improve::handle_natural_improvement(&bot, &message(10, "private", cfg.owner_id.0, text), &cfg, text).await);
+}
