@@ -45,8 +45,29 @@ pub(crate) fn maksut_command<'a>(text: &'a str, username: &str) -> Option<&'a st
     addressed.then(|| parts.next().unwrap_or(""))
 }
 
+/// Replies with the sticker for the first standalone «да»/«нет» in the message.
+/// Works where the bot already accepts messages: the owner's private chat or an
+/// enabled group; a message carrying a link keeps its normal download handling.
+async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: &str) -> bool {
+    let Some(unique_id) = sticker_rule(text) else { return false };
+    let Some(file_id) = cfg.sticker_replies.file_id(unique_id) else { return false };
+    if !message.chat.is_private()
+        && !group_enabled(&cfg.database, message.chat.id).await.is_ok_and(|enabled| enabled)
+    {
+        return false;
+    }
+    let _ = bot.send_sticker(message.chat.id, InputFile::file_id(file_id.clone()))
+        .reply_parameters(ReplyParameters::new(message.id))
+        .disable_notification(true)
+        .await;
+    true
+}
+
 pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings>) -> ResponseResult<()> {
-    let Some(text) = message.text().or_else(|| message.caption()) else { return Ok(()) };
+    let text = message.text().or_else(|| message.caption()).unwrap_or("");
+    let media = message_image(&message)
+        .or_else(|| message.reply_to_message().and_then(message_image));
+    if text.is_empty() && media.is_none() { return Ok(()); }
     let Some(sender) = message.from.as_ref().filter(|user| !user.is_bot) else { return Ok(()) };
     if text.trim_start().starts_with('/') {
         if let Some(command) = maksut_command(text, &cfg.bot_username) {
@@ -54,12 +75,46 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
         }
         return Ok(());
     }
+    if !message.chat.is_private() && !text.is_empty() {
+        let name = sender.username.as_deref()
+            .map(|username| format!("@{username}"))
+            .unwrap_or_else(|| sender.first_name.clone());
+        remember_message(&cfg, message.chat.id, message.id.0, name, text).await;
+    }
     if message.chat.is_private() {
         if sender.id != cfg.owner_id { return Ok(()) }
     } else if !message.chat.is_group() && !message.chat.is_supergroup() {
         return Ok(());
     }
-    let Some(url) = first_link(text) else { return Ok(()) };
+    let Some(url) = first_link(text) else {
+        if reply_with_sticker(&bot, &message, &cfg, text).await {
+            return Ok(());
+        }
+        let reply_to_bot = message.reply_to_message()
+            .and_then(|reply| reply.from.as_ref())
+            .is_some_and(|user| user.is_bot
+                && user.username.as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(&cfg.bot_username)));
+        let private = message.chat.is_private();
+        let prompt = match chat_prompt(text, private, &cfg.bot_username, reply_to_bot) {
+            Some(prompt) => Some(prompt),
+            None if media.is_some() && (private || reply_to_bot) => Some(String::new()),
+            None => None,
+        };
+        if let Some(prompt) = prompt {
+            let image = match media.as_ref() {
+                Some((file_id, mime)) => download_image(&bot, file_id, mime).await,
+                None => None,
+            };
+            let prompt = if media.is_some() && image.is_none() {
+                format!("{prompt}\n[не удалось загрузить вложение]")
+            } else {
+                prompt
+            };
+            reply_with_chat(&bot, &message, &cfg, sender.id, &prompt, image.as_ref()).await;
+        }
+        return Ok(());
+    };
     let user_semaphore = {
         let mut limits = cfg.user_rate_limits.write().await;
         Arc::clone(limits.entry(sender.id)

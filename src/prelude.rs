@@ -1,5 +1,5 @@
 pub(crate) use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env,
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -19,7 +19,7 @@ pub(crate) use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, S
 pub(crate) use teloxide::{
     prelude::*,
     types::{ChatId, FileId, InputFile, InputMedia, InputMediaAudio, InputMediaDocument,
-        InputMediaPhoto, InputMediaVideo, Message, ParseMode, UserId},
+        InputMediaPhoto, InputMediaVideo, Message, ParseMode, ReplyParameters, UserId},
 };
 pub(crate) use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::lookup_host, process::Command, sync::{RwLock, Semaphore}, time};
 pub(crate) use url::Url;

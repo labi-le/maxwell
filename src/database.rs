@@ -19,6 +19,16 @@ pub(crate) async fn open_database(url: &str) -> Result<SqlitePool, sqlx::Error> 
     )
     .execute(&pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chat_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, created_at INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS chat_turns_lookup ON chat_turns(chat_id, user_id, created_at)",
+    )
+    .execute(&pool)
+    .await?;
     init_cache(&pool).await?;
     Ok(pool)
 }

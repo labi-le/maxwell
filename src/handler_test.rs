@@ -14,6 +14,39 @@ use crate::feature_support::*;
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn sticker_replies_match_standalone_yes_no_only_where_messages_are_accepted() {
+        let fixture = FeatureFixture::new(&["jpg"], "exit 0").await;
+        let sticker = |requests: &[FeatureRequest]| -> Vec<(String, u64)> {
+            requests.iter().filter(|request| request.method == "sendsticker")
+                .map(|request| (request.fields["sticker"].as_str().unwrap().to_owned(),
+                    request.fields["reply_parameters"]["message_id"].as_u64().unwrap()))
+                .collect()
+        };
+        fixture.send_text(1, 1, "Owner", "Да, конечно").await;
+        assert_eq!(sticker(&fixture.api.snapshot().await),
+            [(format!("sticker-{PIZDA}"), 73)]);
+        fixture.api.clear().await;
+        fixture.send_text(1, 2, "Stranger", "нет").await;
+        assert!(fixture.api.snapshot().await.is_empty(), "non-owner private chats stay silent");
+        let group = -100777;
+        fixture.api.clear().await;
+        fixture.send_text(group, 42, "Member", "нет").await;
+        assert!(fixture.api.snapshot().await.is_empty(), "disabled groups stay silent");
+        set_group_enabled(&fixture.cfg.database, ChatId(group), true).await.unwrap();
+        fixture.send_text(group, 42, "Member", "НЕТ").await;
+        let requests = fixture.api.snapshot().await;
+        assert_eq!(sticker(&requests), [(format!("sticker-{PIDORA_OTVET}"), 73)]);
+        assert_eq!(requests[0].fields["disable_notification"], true);
+        fixture.api.clear().await;
+        fixture.send_text(1, 1, "Owner", &format!("да {LINK}")).await;
+        let requests = fixture.api.snapshot().await;
+        assert!(requests.iter().all(|request| request.method != "sendsticker"),
+            "a message with a link keeps its normal download handling");
+        assert!(requests.iter().any(FeatureRequest::is_media));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn only_owner_private_and_humans_in_enabled_groups_reach_download_queue() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("started");

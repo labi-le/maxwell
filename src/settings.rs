@@ -12,6 +12,9 @@ pub(crate) struct Settings {
     pub(crate) twitter_helper: PathBuf,
     pub(crate) cookies_file: Option<PathBuf>,
     pub(crate) cookie_refresh_url: Option<Url>,
+    pub(crate) chat: Option<ChatConfig>,
+    pub(crate) chat_recent: Arc<RwLock<HashMap<i64, VecDeque<RecentMessage>>>>,
+    pub(crate) sticker_replies: StickerReplies,
     pub(crate) max_media_bytes: u64,
     pub(crate) downloads: Arc<Semaphore>,
     pub(crate) user_rate_limits: Arc<RwLock<HashMap<UserId, Arc<Semaphore>>>>,
@@ -46,6 +49,26 @@ impl Settings {
         if let Some(path) = &cookies_file {
             check_cookies(path)?;
         }
+        let chat = match env::var("LLM_API_KEY") {
+            Ok(key) if !key.trim().is_empty() => {
+                let base = env::var("LLM_BASE_URL").unwrap_or_else(|_| DEFAULT_LLM_BASE.to_string());
+                let base = parse_llm_url(&base, "LLM_BASE_URL")?;
+                let tavily_key = env::var("TAVILY_API_KEY").ok().filter(|value| !value.trim().is_empty());
+                let search_default = if tavily_key.is_some() {
+                    "https://api.tavily.com/search"
+                } else {
+                    DEFAULT_SEARCH_URL
+                };
+                let search = env::var("LLM_SEARCH_URL").unwrap_or_else(|_| search_default.to_string());
+                let search = parse_llm_url(&search, "LLM_SEARCH_URL")?;
+                let model = env::var("LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.to_string());
+                if model.trim().is_empty() {
+                    return Err("LLM_MODEL must not be empty".into());
+                }
+                Some(ChatConfig::new(base, key, model, search, tavily_key))
+            }
+            _ => None,
+        };
         let cookie_refresh_url = env::var("COOKIE_REFRESH_URL")
             .ok()
             .filter(|value| !value.is_empty())
@@ -61,11 +84,28 @@ impl Settings {
             twitter_helper: PathBuf::from(env::var("TWITTER_HELPER").unwrap_or_else(|_| "/opt/maksut/twitter_images.py".into())),
             cookies_file,
             cookie_refresh_url,
+            chat,
+            chat_recent: Arc::new(RwLock::new(HashMap::new())),
+            sticker_replies: StickerReplies::default(),
             max_media_bytes,
             downloads: Arc::new(Semaphore::new(2)),
             user_rate_limits: Arc::new(RwLock::new(HashMap::new())),
         })
     }
+}
+
+pub(crate) fn parse_llm_url(raw: &str, name: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|_| format!("{name} must be a valid URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(format!("{name} must be an http(s) URL without credentials, query, or fragment"));
+    }
+    Ok(url)
 }
 
 pub(crate) fn check_cookies(path: &Path) -> Result<(), String> {

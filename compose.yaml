@@ -10,15 +10,20 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Read the token and owner from the file, not from the caller's shell:
+    # an exported BOT_TOKEN would otherwise shadow .env and crash-loop the bot.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      BOT_TOKEN: ${BOT_TOKEN:-}
-      OWNER_ID: ${OWNER_ID:-}
       DATABASE_URL: sqlite:///data/maksut.db
       DOWNLOAD_DIR: /tmp/maksut
       YTDLP_BIN: yt-dlp
       MAX_MEDIA_BYTES: ${MAX_MEDIA_BYTES:-47185920}
       COOKIES_FILE: /run/secrets/maksut/cookies.txt
       COOKIE_REFRESH_URL: http://cookie-refresh:8080
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.labile.cc/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4.1-flash}
     volumes:
       - data:/data
       # Bind the directory so atomic replacement of cookies.txt stays visible.

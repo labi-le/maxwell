@@ -32,7 +32,10 @@ pub(crate) async fn fake_settings(root: &Path, script: &str) -> Settings {
         owner_id: UserId(1), bot_username: "MyBot".into(), database: db,
         download_dir: root.into(), ytdlp_bin: fake,
         python_bin: PathBuf::from("/nonexistent/python"), twitter_helper: root.join("twitter-helper"),
-        cookies_file: None, cookie_refresh_url: None, max_media_bytes: 100,
+        cookies_file: None, cookie_refresh_url: None, chat: None,
+        chat_recent: Arc::new(RwLock::new(HashMap::new())),
+        sticker_replies: StickerReplies::for_tests(),
+        max_media_bytes: 100,
         downloads: Arc::new(Semaphore::new(2)),
         user_rate_limits: Arc::new(RwLock::new(HashMap::new())),
     }

@@ -359,6 +359,38 @@ cat '{0}/rows'
     }
 
     #[tokio::test]
+    async fn features_shared_caption_is_attached_once_per_album() {
+        let fixture = FeatureFixture::new(&["jpg", "jpg", "jpg"], "exit 0").await;
+        // A post without its own text (e.g. a TikTok photo set) produces the same
+        // attribution caption for every image; Telegram shows album captions per
+        // item, so repeating it per image looks like a duplicated message.
+        let mut script = feature_script(fixture.root.path(), &["jpg", "jpg", "jpg"], "exit 0");
+        for index in 0..3 {
+            script = script.replace(
+                &serde_json::to_string(&format!("Post {index} & <source>")).unwrap(),
+                &serde_json::to_string("Общий текст").unwrap());
+        }
+        fs::write(&fixture.cfg.ytdlp_bin, script).unwrap();
+        fixture.send(1, 1, "Denis", LINK).await;
+        let requests = fixture.api.snapshot().await;
+        let media: Vec<_> = requests.iter().filter(|request| request.is_media()).collect();
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].method, "sendmediagroup");
+        let items = media[0].media();
+        assert_eq!(items.len(), 3);
+        let caption = items[0]["caption"].as_str().expect("first album item keeps the caption");
+        assert!(caption.starts_with("Общий текст"));
+        assert!(caption.contains("<code>От Denis</code>"));
+        assert_eq!(items[0]["parse_mode"], "HTML");
+        for item in &items[1..] {
+            assert_eq!(item["caption"], Value::Null, "an identical caption must not repeat per album item");
+            assert_eq!(item["parse_mode"], Value::Null);
+        }
+        assert_eq!(requests.last().unwrap().method, "deletemessage");
+        feature_silent(&requests);
+    }
+
+    #[tokio::test]
     async fn features_message_with_own_text_keeps_the_source_even_after_full_delivery() {
         let fixture = FeatureFixture::new(&["jpg"], "exit 0").await;
         fixture.send_text(1, 1, "Alice", &format!("смотрите какой котик {LINK}")).await;

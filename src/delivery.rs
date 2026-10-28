@@ -187,18 +187,47 @@ pub(crate) async fn deliver_items(bot: &Bot, chat_id: ChatId, mut items: Vec<Del
                 Err(error) => { report.error = Some(error); break; }
             }
         } else {
+            let mut seen_captions: Vec<String> = Vec::new();
             let media: Vec<_> = items[start..end].iter_mut().filter_map(|item| {
                 let input = item.input.take()?;
                 let caption = std::mem::take(&mut item.caption);
+                // Telegram shows per-item album captions, so a shared attribution block
+                // would repeat once per image. Keep each distinct caption, but attach an
+                // already-delivered identical caption only to its first album item.
+                let duplicate = seen_captions.iter().any(|seen| *seen == caption);
+                if !caption.is_empty() && !duplicate {
+                    seen_captions.push(caption.clone());
+                }
+                let caption = if duplicate { String::new() } else { caption };
                 Some(match item.kind {
-                    MediaKind::Photo => InputMedia::Photo(InputMediaPhoto::new(input)
-                        .caption(caption).parse_mode(ParseMode::Html)),
-                    MediaKind::Video => InputMedia::Video(InputMediaVideo::new(input)
-                        .caption(caption).parse_mode(ParseMode::Html).supports_streaming(true)),
-                    MediaKind::Audio => InputMedia::Audio(InputMediaAudio::new(input)
-                        .caption(caption).parse_mode(ParseMode::Html)),
-                    MediaKind::Document => InputMedia::Document(InputMediaDocument::new(input)
-                        .caption(caption).parse_mode(ParseMode::Html)),
+                    MediaKind::Photo => {
+                        let mut media = InputMediaPhoto::new(input);
+                        if !caption.is_empty() {
+                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        }
+                        InputMedia::Photo(media)
+                    }
+                    MediaKind::Video => {
+                        let mut media = InputMediaVideo::new(input).supports_streaming(true);
+                        if !caption.is_empty() {
+                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        }
+                        InputMedia::Video(media)
+                    }
+                    MediaKind::Audio => {
+                        let mut media = InputMediaAudio::new(input);
+                        if !caption.is_empty() {
+                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        }
+                        InputMedia::Audio(media)
+                    }
+                    MediaKind::Document => {
+                        let mut media = InputMediaDocument::new(input);
+                        if !caption.is_empty() {
+                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        }
+                        InputMedia::Document(media)
+                    }
                 })
             }).collect();
             match bot.send_media_group(chat_id, media).disable_notification(true).await {

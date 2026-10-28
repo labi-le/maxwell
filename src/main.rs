@@ -6,6 +6,8 @@ mod user_errors;
 
 pub(crate) use media_cache::{cache_key, init_cache, invalidate_cache, lookup_cache, store_cache, CachedMedia};
 
+mod chat;
+pub(crate) use chat::*;
 mod settings;
 pub(crate) use settings::*;
 mod cookies;
@@ -30,6 +32,8 @@ mod download;
 pub(crate) use download::*;
 mod cookie_refresh;
 pub(crate) use cookie_refresh::*;
+mod stickers;
+pub(crate) use stickers::*;
 mod download_videos;
 pub(crate) use download_videos::*;
 mod caption;
@@ -103,6 +107,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    cfg.sticker_replies = load_sticker_replies(&bot).await;
     let cfg = Arc::new(cfg);
     teloxide::repl(bot, move |bot: Bot, message: Message| {
         let cfg = Arc::clone(&cfg);
@@ -114,6 +119,8 @@ async fn main() {
 
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod chat_test;
 #[cfg(test)]
 mod feature_support;
 #[cfg(test)]
@@ -136,6 +143,8 @@ mod media_test;
 mod process_test;
 #[cfg(test)]
 mod cookie_refresh_test;
+#[cfg(test)]
+mod stickers_test;
 #[cfg(test)]
 mod download_test;
 #[cfg(test)]
