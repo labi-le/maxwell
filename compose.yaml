@@ -28,6 +28,7 @@ services:
       - data:/data
       # Bind the directory so atomic replacement of cookies.txt stays visible.
       - ${MAKSUT_COOKIES_DIR:-/home/eden/.local/share/maksut/cookies}:/run/secrets/maksut/:ro
+      - ./self-improve:/var/lib/maksut/self-improve:rw
 
   cookie-refresh:
     build:

@@ -1,5 +1,5 @@
 pub(crate) use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     env,
     fs,
     io::{BufRead, BufReader, Read, Write},

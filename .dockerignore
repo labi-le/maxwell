@@ -21,3 +21,4 @@ cookies/
 **/tests/
 /tools/test_*.py
 .secrets/
+self-improve/

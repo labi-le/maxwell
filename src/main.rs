@@ -7,7 +7,10 @@ mod user_errors;
 pub(crate) use media_cache::{cache_key, init_cache, invalidate_cache, lookup_cache, store_cache, CachedMedia};
 
 mod chat;
+mod memory;
+mod self_improve;
 pub(crate) use chat::*;
+pub(crate) use memory::*;
 mod settings;
 pub(crate) use settings::*;
 mod cookies;
@@ -109,11 +112,35 @@ async fn main() {
     };
     cfg.sticker_replies = load_sticker_replies(&bot).await;
     let cfg = Arc::new(cfg);
-    teloxide::repl(bot, move |bot: Bot, message: Message| {
-        let cfg = Arc::clone(&cfg);
-        async move { handle_message(bot, message, cfg).await }
-    })
-    .await;
+    let catalog_cfg = Arc::clone(&cfg);
+    let catalog_bot = bot.clone();
+    tokio::spawn(async move {
+        let catalog = load_sticker_catalog(&catalog_bot).await;
+        *catalog_cfg.sticker_catalog.write().await = catalog;
+    });
+    tokio::spawn(memory_compactor(Arc::clone(&cfg)));
+    tokio::spawn(crate::self_improve::improvement_notifier(bot.clone(), Arc::clone(&cfg)));
+    let handler = teloxide::dptree::entry()
+        .branch(teloxide::types::Update::filter_message().endpoint(message_endpoint))
+        .branch(teloxide::types::Update::filter_callback_query().endpoint(callback_endpoint));
+    teloxide::dispatching::Dispatcher::builder(bot, handler)
+        .dependencies(teloxide::dptree::deps![cfg])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
+}
+
+async fn message_endpoint(bot: Bot, message: Message, cfg: Arc<Settings>) -> ResponseResult<()> {
+    handle_message(bot, message, cfg).await
+}
+
+async fn callback_endpoint(
+    bot: Bot,
+    query: teloxide::types::CallbackQuery,
+    cfg: Arc<Settings>,
+) -> ResponseResult<()> {
+    handle_callback_query(bot, query, cfg).await
 }
 
 
@@ -145,6 +172,8 @@ mod process_test;
 mod cookie_refresh_test;
 #[cfg(test)]
 mod stickers_test;
+#[cfg(test)]
+mod self_improve_test;
 #[cfg(test)]
 mod download_test;
 #[cfg(test)]

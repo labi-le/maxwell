@@ -101,7 +101,7 @@ pub(crate) async fn convert_video(path: &Path, dimensions: (u32, u32), max_bytes
     cmd.as_std_mut().process_group(0);
     let child = cmd.spawn().map_err(|_| "Не удалось запустить ffmpeg".to_string())?;
     let mut process = DownloadProcess::new(child);
-    let mut interval = time::interval(Duration::from_millis(300));
+    let mut interval = time::interval_at(time::Instant::now() + Duration::from_millis(300), Duration::from_millis(300));
     loop {
         tokio::select! {
             result = process.wait() => {

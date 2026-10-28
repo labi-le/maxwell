@@ -1,0 +1,4 @@
+modelRoles:
+  default: deepseek-v4.1-flash
+tools:
+  xdev: false

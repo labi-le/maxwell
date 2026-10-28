@@ -55,6 +55,28 @@ fn sticker_rule_ignores_substrings_and_other_numbers() {
 
 #[test]
 fn sticker_rule_takes_the_first_trigger_in_the_message() {
-    assert_eq!(sticker_rule("да нет"), Some(PIZDA));
+    assert_eq!(sticker_rule("да нет"), None);
     assert_eq!(sticker_rule("ну 300"), Some(TRACTORIST));
+    assert_eq!(sticker_rule("да я ебу"), None);
+    assert_eq!(sticker_rule("нет я ебу"), None);
+    assert_eq!(sticker_rule("да, конечно"), Some(PIZDA));
+    assert_eq!(sticker_rule("да это точно"), Some(PIZDA));
+    assert_eq!(sticker_rule("да я согласен"), Some(PIZDA));
+    assert_eq!(sticker_rule("да похуй"), None);
+    assert_eq!(sticker_rule("нет, спасибо"), Some(PIDORA_OTVET));
+    assert_eq!(sticker_rule("нет, не хочу"), Some(PIDORA_OTVET));
+}
+
+#[test]
+fn catalog_searches_descriptions_and_emoji() {
+    let catalog = StickerCatalog::for_tests(&[
+        ("sad-cat", "pack", "котики", "😢", "грустный кот плачет"),
+        ("funny-cat", "pack", "мемы", "😂", "смешной кот смеётся"),
+    ]);
+    assert_eq!(catalog.search("грустный кот", 10)[0].file_id.0, "sad-cat");
+    assert_eq!(catalog.search("😂", 10)[0].file_id.0, "funny-cat");
+    assert_eq!(catalog.get("pack:1").unwrap().file_id.0, "sad-cat");
+    assert!(catalog.pick("грустный").is_some());
+    assert!(catalog.pick("").is_some());
+    assert!(catalog.pick("зелёный слоник").is_none());
 }

@@ -16,15 +16,15 @@ use crate::feature_support::*;
     #[tokio::test]
     async fn sticker_replies_match_standalone_yes_no_only_where_messages_are_accepted() {
         let fixture = FeatureFixture::new(&["jpg"], "exit 0").await;
-        let sticker = |requests: &[FeatureRequest]| -> Vec<(String, u64)> {
+        let sticker = |requests: &[FeatureRequest]| -> Vec<String> {
             requests.iter().filter(|request| request.method == "sendsticker")
-                .map(|request| (request.fields["sticker"].as_str().unwrap().to_owned(),
-                    request.fields["reply_parameters"]["message_id"].as_u64().unwrap()))
+                .map(|request| request.fields["sticker"].as_str().unwrap().to_owned())
                 .collect()
         };
         fixture.send_text(1, 1, "Owner", "Да, конечно").await;
-        assert_eq!(sticker(&fixture.api.snapshot().await),
-            [(format!("sticker-{PIZDA}"), 73)]);
+        let requests = fixture.api.snapshot().await;
+        assert_eq!(sticker(&requests), [format!("sticker-{PIZDA}")]);
+        assert_eq!(requests[0].fields["reply_parameters"]["message_id"], 73);
         fixture.api.clear().await;
         fixture.send_text(1, 2, "Stranger", "нет").await;
         assert!(fixture.api.snapshot().await.is_empty(), "non-owner private chats stay silent");
@@ -34,9 +34,12 @@ use crate::feature_support::*;
         assert!(fixture.api.snapshot().await.is_empty(), "disabled groups stay silent");
         set_group_enabled(&fixture.cfg.database, ChatId(group), true).await.unwrap();
         fixture.send_text(group, 42, "Member", "НЕТ").await;
+        assert!(fixture.api.snapshot().await.is_empty(), "non-owner group messages cannot trigger stickers");
+        fixture.send_text(group, 1, "Owner", "НЕТ").await;
         let requests = fixture.api.snapshot().await;
-        assert_eq!(sticker(&requests), [(format!("sticker-{PIDORA_OTVET}"), 73)]);
+        assert_eq!(sticker(&requests), [format!("sticker-{PIDORA_OTVET}")]);
         assert_eq!(requests[0].fields["disable_notification"], true);
+        assert!(requests[0].fields.get("reply_parameters").is_none(), "group stickers must not ping the owner");
         fixture.api.clear().await;
         fixture.send_text(1, 1, "Owner", &format!("да {LINK}")).await;
         let requests = fixture.api.snapshot().await;
@@ -76,9 +79,10 @@ use crate::feature_support::*;
             (42, "private", Some((cfg.owner_id.0, false)), true),
             (group_id.0, "group", None, false),
             (group_id.0, "group", Some((42, true)), false),
-            (group_id.0, "group", Some((42, false)), true),
+            (group_id.0, "group", Some((42, false)), false),
             (group_id.0, "group", Some((cfg.owner_id.0, false)), true),
-            (group_id.0, "supergroup", Some((42, false)), true),
+            (group_id.0, "supergroup", Some((42, false)), false),
+            (group_id.0, "supergroup", Some((cfg.owner_id.0, false)), true),
             (-100124, "group", Some((42, false)), false),
             (-100124, "group", Some((cfg.owner_id.0, false)), false),
         ];
@@ -140,17 +144,18 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
         assert!(records.lock().await.is_empty(), "disabled groups and private outsiders stay silent");
         handle_message(bot.clone(), message(group, "group", Some((3, false)), "/maksut on"),
             Arc::clone(&cfg)).await.unwrap();
-        {
-            let calls = records.lock().await;
-            assert!(calls.iter().any(|(path, _)| api_method_is(path, "getChatMember")));
-            assert!(!calls.iter().any(|(path, _)| api_method_is(path, "sendMessage")));
-        }
+        assert!(records.lock().await.is_empty(), "non-owner cannot enable the group");
+        assert!(!group_enabled(&cfg.database, ChatId(group)).await.unwrap());
         handle_message(bot.clone(), message(group, "group", Some((2, false)), "/maksut on"),
             Arc::clone(&cfg)).await.unwrap();
-        assert!(group_enabled(&cfg.database, ChatId(group)).await.unwrap(), "admin enables the group");
+        assert!(records.lock().await.is_empty(), "group admin is not the owner");
+        assert!(!group_enabled(&cfg.database, ChatId(group)).await.unwrap());
+        handle_message(bot.clone(), message(group, "group", Some((1, false)), "/maksut on"),
+            Arc::clone(&cfg)).await.unwrap();
+        assert!(group_enabled(&cfg.database, ChatId(group)).await.unwrap(), "owner enables the group");
         let reply_count = records.lock().await.iter()
             .filter(|(path, _)| api_method_is(path, "sendMessage")).count();
-        assert_eq!(reply_count, 1, "admin receives command confirmation");
+        assert_eq!(reply_count, 1, "owner receives command confirmation");
         let before = records.lock().await.len();
         for sender in [None, Some((2, true))] {
             handle_message(bot.clone(), message(group, "group", sender, "/maksut off"),
@@ -164,12 +169,16 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
         }
         handle_message(bot.clone(), message(group, "group", Some((3, false)), link),
             Arc::clone(&cfg)).await.unwrap();
+        assert!(records.lock().await.iter().all(|(path, _)| !api_method_is(path, "sendVideo")),
+            "non-owner link is ignored");
+        handle_message(bot.clone(), message(group, "group", Some((1, false)), link),
+            Arc::clone(&cfg)).await.unwrap();
         {
             let calls = records.lock().await;
             let videos: Vec<_> = calls.iter().filter(|(path, _)| api_method_is(path, "sendVideo")).collect();
-            assert_eq!(videos.len(), 1, "only the human member's link is downloaded");
-            assert!(videos[0].1.contains("<code>От Member</code>"));
-            assert!(!videos[0].1.contains("<code>От Owner</code>"));
+            assert_eq!(videos.len(), 1, "only the owner's link is downloaded");
+            assert!(videos[0].1.contains("<code>От Owner</code>"));
+            assert!(!videos[0].1.contains("<code>От Member</code>"));
             assert_eq!(calls.iter().filter(|(path, _)| api_method_is(path, "deleteMessage")).count(), 1);
             assert_eq!(calls.iter().filter(|(path, _)| api_method_is(path, "sendMessage")).count(),
                 reply_count, "successful delivery emits no status message");
@@ -204,7 +213,7 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
                 })
             ).unwrap();
             let permit = cfg.downloads.acquire().await.unwrap();
-            let queued = tokio::spawn(handle_message(bot.clone(), message(3, "https://youtu.be/abc"),
+            let queued = tokio::spawn(handle_message(bot.clone(), message(1, "https://youtu.be/abc"),
                 Arc::clone(&cfg)));
             time::sleep(Duration::from_millis(100)).await;
             assert!(!queued.is_finished(), "member request must wait for the download permit");
@@ -225,13 +234,9 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn ordinary_group_chatter_skips_database_even_when_unavailable() {
+    async fn ordinary_group_chatter_is_logged_without_api_calls() {
         let root = tempfile::tempdir().unwrap();
-        let mut cfg = fake_settings(root.path(), "#!/bin/sh\nexit 1\n").await;
-        cfg.database = SqlitePoolOptions::new().max_connections(1)
-            .connect(&format!("sqlite://{}", root.path().join("state.db").display()))
-            .await.unwrap();
-        let cfg = Arc::new(cfg);
+        let cfg = Arc::new(fake_settings(root.path(), "#!/bin/sh\nexit 1\n").await);
         let (bot, records, server) = recording_bot(true, true).await;
         let message = |chat_type: &str, text: &str| serde_json::from_value::<Message>(
             serde_json::json!({
@@ -241,7 +246,6 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
                 "text": text
             })
         ).unwrap();
-        let held_connection = cfg.database.acquire().await.unwrap();
         for (chat_type, text) in [
             ("group", "Just chatting"),
             ("supergroup", "https://youtube.com/watch"),
@@ -249,18 +253,15 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
         ] {
             time::timeout(Duration::from_millis(500),
                 handle_message(bot.clone(), message(chat_type, text), Arc::clone(&cfg)))
-                .await.expect("irrelevant text queried group settings").unwrap();
+                .await.expect("chatter logging stalled").unwrap();
         }
-        drop(held_connection);
-        cfg.database.close().await;
-        for (chat_type, text) in [
-            ("group", "Just chatting"),
-            ("supergroup", "https://youtube.com/watch"),
-            ("group", "https://example.org/video"),
-        ] {
-            handle_message(bot.clone(), message(chat_type, text), Arc::clone(&cfg)).await.unwrap();
-        }
-        assert!(records.lock().await.is_empty(), "irrelevant text must never emit DB errors");
+        assert!(records.lock().await.is_empty(), "chatter must not call Telegram APIs");
+        let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?")
+            .bind(-100123)
+            .fetch_one(&cfg.database)
+            .await
+            .unwrap();
+        assert_eq!(logged, 3, "all group chatter is logged");
         server.abort();
     }
 
@@ -273,14 +274,14 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
         assert!(fixture.api.snapshot().await.is_empty(), "private outsiders cannot receive cached media");
         let group = -100123;
         set_group_enabled(&fixture.cfg.database, ChatId(group), true).await.unwrap();
-        fixture.send(group, 3, "Member", LINK).await;
+        fixture.send(group, 1, "Owner", LINK).await;
         let calls = fixture.calls();
         fixture.api.clear().await;
-        fixture.send(group, 4, "Next member", LINK).await;
-        assert_eq!(fixture.calls(), calls, "enabled group members can use this group's warm publication");
+        fixture.send(group, 1, "Owner again", LINK).await;
+        assert_eq!(fixture.calls(), calls, "the owner can use this group's warm publication");
         set_group_enabled(&fixture.cfg.database, ChatId(group), false).await.unwrap();
         fixture.api.clear().await;
-        fixture.send(group, 3, "Member", LINK).await;
+        fixture.send(group, 1, "Owner", LINK).await;
         assert!(fixture.api.snapshot().await.is_empty(), "disabled groups cannot receive cached media");
         assert_eq!(fixture.calls(), calls);
         set_group_enabled(&fixture.cfg.database, ChatId(group), true).await.unwrap();
@@ -290,7 +291,7 @@ printf '%s\n' "$dir/finished.mp4" > "$manifest"
         let permit = fixture.cfg.downloads.acquire().await.unwrap();
         let message: Message = serde_json::from_value(serde_json::json!({
             "message_id": 74, "date": 1700000000, "chat": {"id": group, "type": "supergroup"},
-            "from": {"id": 3, "is_bot": false, "first_name": "Queued"}, "text": LINK,
+            "from": {"id": 1, "is_bot": false, "first_name": "Queued"}, "text": LINK,
         })).unwrap();
         let queued = tokio::spawn(handle_message(fixture.api.bot.clone(), message, Arc::clone(&fixture.cfg)));
         time::sleep(Duration::from_millis(50)).await;

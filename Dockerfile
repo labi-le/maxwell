@@ -19,9 +19,13 @@ ENV PATH="/opt/yt-dlp/bin:${PATH}" \
     DOWNLOAD_DIR=/tmp/maksut \
     YTDLP_BIN=yt-dlp \
     PYTHON_BIN=/opt/yt-dlp/bin/python \
-    TWITTER_HELPER=/opt/maksut/twitter_images.py
+    TWITTER_HELPER=/opt/maksut/twitter_images.py \
+    STICKER_SETS_FILE=/opt/maksut/sticker_sets.txt \
+    STICKER_DESCRIPTIONS_FILE=/opt/maksut/sticker_descriptions.json
 COPY --from=build /app/target/release/maksut /usr/local/bin/maksut
 COPY --from=build /app/tools/twitter_images.py /opt/maksut/twitter_images.py
+COPY --from=build /app/sticker_sets.txt /opt/maksut/sticker_sets.txt
+COPY --from=build /app/sticker_descriptions.json /opt/maksut/sticker_descriptions.json
 USER 1000:1000
 WORKDIR /data
 CMD ["/usr/local/bin/maksut"]

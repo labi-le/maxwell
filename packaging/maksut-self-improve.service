@@ -1,0 +1,19 @@
+[Unit]
+Description=Maksut self-improvement orchestrator
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/labile/projects/maxwell
+EnvironmentFile=/home/labile/projects/maxwell/.env
+Environment=PATH=/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+Environment=SELF_IMPROVE_REPO=/home/labile/projects/maxwell
+Environment=SELF_IMPROVE_DIR=/home/labile/projects/maxwell/self-improve
+Environment=SELF_IMPROVE_OMP=/run/current-system/sw/bin/omp
+ExecStart=/run/current-system/sw/bin/python3 /home/labile/projects/maxwell/tools/self_improve_orchestrator.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

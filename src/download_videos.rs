@@ -132,7 +132,7 @@ pub(crate) async fn download_videos_attempt(
     let mut process = DownloadProcess::new(child);
     process.capture_stdout();
     // Checking once per second detects storage overflow before it becomes critical.
-    let mut interval = time::interval(Duration::from_secs(1));
+    let mut interval = time::interval_at(time::Instant::now() + Duration::from_secs(1), Duration::from_secs(1));
     let timeout = time::sleep_until(deadline);
     tokio::pin!(timeout);
     let mut limited = false;

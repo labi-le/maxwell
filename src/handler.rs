@@ -8,16 +8,7 @@ pub(crate) async fn handle_command(bot: &Bot, message: &Message, cfg: &Settings,
         }
         return;
     }
-    let authorized = if message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
-        true
-    } else if let Some(user) = message.from.as_ref() {
-        bot.get_chat_member(message.chat.id, user.id)
-            .await
-            .is_ok_and(|member| member.kind.is_privileged())
-    } else {
-        false
-    };
-    if !authorized {
+    if !message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
         return;
     }
     let result = match command {
@@ -46,9 +37,11 @@ pub(crate) fn maksut_command<'a>(text: &'a str, username: &str) -> Option<&'a st
 }
 
 /// Replies with the sticker for the first standalone «да»/«нет» in the message.
-/// Works where the bot already accepts messages: the owner's private chat or an
-/// enabled group; a message carrying a link keeps its normal download handling.
+/// Only the owner can trigger actions; other participants are read-only.
 async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: &str) -> bool {
+    if !message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
+        return false;
+    }
     let Some(unique_id) = sticker_rule(text) else { return false };
     let Some(file_id) = cfg.sticker_replies.file_id(unique_id) else { return false };
     if !message.chat.is_private()
@@ -56,10 +49,15 @@ async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: 
     {
         return false;
     }
-    let _ = bot.send_sticker(message.chat.id, InputFile::file_id(file_id.clone()))
-        .reply_parameters(ReplyParameters::new(message.id))
-        .disable_notification(true)
-        .await;
+    let request = bot.send_sticker(message.chat.id, InputFile::file_id(file_id.clone()));
+    let request = if message.chat.is_private() {
+        request.reply_parameters(ReplyParameters::new(message.id))
+    } else {
+        request
+    };
+    if let Ok(sent) = request.disable_notification(true).await {
+        let _ = crate::memory::record_message(&cfg.database, message.chat.id, 0, "максут", "assistant", "[стикер]", Some(sent.id.0), crate::memory::FLAG_JUNK).await;
+    }
     true
 }
 
@@ -69,21 +67,34 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
         .or_else(|| message.reply_to_message().and_then(message_image));
     if text.is_empty() && media.is_none() { return Ok(()); }
     let Some(sender) = message.from.as_ref().filter(|user| !user.is_bot) else { return Ok(()) };
+    let owner = sender.id == cfg.owner_id;
+    let sender_name = sender.username.clone().unwrap_or_else(|| sender.first_name.clone());
+    let log_text = if text.trim().is_empty() { "[вложение]" } else { text };
+    let mut flags = crate::memory::detect_flags(log_text);
+    if text.trim().is_empty() && media.is_some() {
+        flags |= crate::memory::FLAG_JUNK;
+    }
     if text.trim_start().starts_with('/') {
+        flags |= crate::memory::FLAG_JUNK;
+        let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
+        if crate::self_improve::handle_improve(&bot, &message, &cfg, text).await {
+            return Ok(());
+        }
         if let Some(command) = maksut_command(text, &cfg.bot_username) {
             handle_command(&bot, &message, &cfg, command).await;
         }
         return Ok(());
     }
-    if !message.chat.is_private() && !text.is_empty() {
-        let name = sender.username.as_deref()
-            .map(|username| format!("@{username}"))
-            .unwrap_or_else(|| sender.first_name.clone());
-        remember_message(&cfg, message.chat.id, message.id.0, name, text).await;
+    if message.chat.is_private() && sender.id != cfg.owner_id {
+        let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
+        let _ = crate::self_improve::handle_natural_improvement(&bot, &message, &cfg, text).await;
+        return Ok(());
     }
-    if message.chat.is_private() {
-        if sender.id != cfg.owner_id { return Ok(()) }
-    } else if !message.chat.is_group() && !message.chat.is_supergroup() {
+    if !message.chat.is_private() && !message.chat.is_group() && !message.chat.is_supergroup() {
+        return Ok(());
+    }
+    let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
+    if crate::self_improve::handle_natural_improvement(&bot, &message, &cfg, text).await {
         return Ok(());
     }
     let Some(url) = first_link(text) else {
@@ -111,10 +122,13 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             } else {
                 prompt
             };
-            reply_with_chat(&bot, &message, &cfg, sender.id, &prompt, image.as_ref()).await;
+            reply_with_chat(&bot, &message, &cfg, sender.id, &sender_name, owner, &prompt, image.as_ref()).await;
         }
         return Ok(());
     };
+    if !owner {
+        return Ok(());
+    }
     let user_semaphore = {
         let mut limits = cfg.user_rate_limits.write().await;
         Arc::clone(limits.entry(sender.id)
@@ -284,5 +298,15 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
         }
         let _ = bot.send_message(message.chat.id, warning).disable_notification(true).await;
     }
+    Ok(())
+}
+
+
+pub(crate) async fn handle_callback_query(
+    bot: Bot,
+    query: teloxide::types::CallbackQuery,
+    cfg: Arc<Settings>,
+) -> ResponseResult<()> {
+    crate::self_improve::handle_callback(&bot, &query, &cfg).await;
     Ok(())
 }

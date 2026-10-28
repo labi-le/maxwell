@@ -13,8 +13,10 @@ pub(crate) struct Settings {
     pub(crate) cookies_file: Option<PathBuf>,
     pub(crate) cookie_refresh_url: Option<Url>,
     pub(crate) chat: Option<ChatConfig>,
-    pub(crate) chat_recent: Arc<RwLock<HashMap<i64, VecDeque<RecentMessage>>>>,
+    pub(crate) chat_locks: Arc<tokio::sync::Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>>,
+    pub(crate) self_improve_dir: PathBuf,
     pub(crate) sticker_replies: StickerReplies,
+    pub(crate) sticker_catalog: Arc<RwLock<crate::stickers::StickerCatalog>>,
     pub(crate) max_media_bytes: u64,
     pub(crate) downloads: Arc<Semaphore>,
     pub(crate) user_rate_limits: Arc<RwLock<HashMap<UserId, Arc<Semaphore>>>>,
@@ -54,10 +56,16 @@ impl Settings {
                 let base = env::var("LLM_BASE_URL").unwrap_or_else(|_| DEFAULT_LLM_BASE.to_string());
                 let base = parse_llm_url(&base, "LLM_BASE_URL")?;
                 let tavily_key = env::var("TAVILY_API_KEY").ok().filter(|value| !value.trim().is_empty());
-                let search_default = if tavily_key.is_some() {
-                    "https://api.tavily.com/search"
-                } else {
-                    DEFAULT_SEARCH_URL
+                let provider = match env::var("SEARCH_PROVIDER").unwrap_or_else(|_| "firecrawl".into()).as_str() {
+                    "firecrawl" => SearchProvider::Firecrawl,
+                    "tavily" => SearchProvider::Tavily,
+                    "ddg" | "duckduckgo" => SearchProvider::DuckDuckGo,
+                    _ => return Err("SEARCH_PROVIDER must be firecrawl, tavily, or ddg".into()),
+                };
+                let search_default = match provider {
+                    SearchProvider::Firecrawl => "https://api.firecrawl.dev/v1/search",
+                    SearchProvider::Tavily => "https://api.tavily.com/search",
+                    SearchProvider::DuckDuckGo => DEFAULT_SEARCH_URL,
                 };
                 let search = env::var("LLM_SEARCH_URL").unwrap_or_else(|_| search_default.to_string());
                 let search = parse_llm_url(&search, "LLM_SEARCH_URL")?;
@@ -65,7 +73,7 @@ impl Settings {
                 if model.trim().is_empty() {
                     return Err("LLM_MODEL must not be empty".into());
                 }
-                Some(ChatConfig::new(base, key, model, search, tavily_key))
+                Some(ChatConfig::new(base, key, model, search, provider, tavily_key))
             }
             _ => None,
         };
@@ -85,12 +93,21 @@ impl Settings {
             cookies_file,
             cookie_refresh_url,
             chat,
-            chat_recent: Arc::new(RwLock::new(HashMap::new())),
+            chat_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            self_improve_dir: PathBuf::from(env::var("SELF_IMPROVE_DIR").unwrap_or_else(|_| "/var/lib/maksut/self-improve".into())),
             sticker_replies: StickerReplies::default(),
+            sticker_catalog: Arc::new(RwLock::new(crate::stickers::StickerCatalog::default())),
             max_media_bytes,
             downloads: Arc::new(Semaphore::new(2)),
             user_rate_limits: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+}
+
+impl Settings {
+    pub(crate) async fn chat_lock(&self, chat_id: i64) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.chat_locks.lock().await;
+        Arc::clone(locks.entry(chat_id).or_default())
     }
 }
 

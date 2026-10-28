@@ -29,6 +29,27 @@ pub(crate) async fn open_database(url: &str) -> Result<SqlitePool, sqlx::Error> 
     )
     .execute(&pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, author_id INTEGER NOT NULL, author_name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), text TEXT NOT NULL, message_id INTEGER, flags INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, compacted_at INTEGER)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS chat_messages_lookup ON chat_messages(chat_id, compacted_at, id)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chat_summaries (chat_id INTEGER PRIMARY KEY, summary TEXT NOT NULL, through_message_id INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    )
+    .execute(&pool)
+    .await?;
+    migrate_chat_turns(&pool).await?;
     init_cache(&pool).await?;
     Ok(pool)
 }
@@ -53,5 +74,33 @@ pub(crate) async fn set_group_enabled(
     .bind(i64::from(enabled))
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn migrate_chat_turns(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let migrated: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM memory_meta WHERE key = 'chat_turns_migrated'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if migrated.is_some() {
+        return Ok(());
+    }
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+        - 24 * 60 * 60;
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO chat_messages (chat_id, author_id, author_name, role, text, message_id, flags, created_at, compacted_at) SELECT chat_id, CASE WHEN role = 'assistant' THEN 0 ELSE user_id END, CASE WHEN role = 'assistant' THEN 'максут' ELSE CAST(user_id AS TEXT) END, role, content, NULL, 0, created_at, NULL FROM chat_turns WHERE created_at >= ? ORDER BY id",
+    )
+    .bind(cutoff)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("INSERT INTO memory_meta (key, value) VALUES ('chat_turns_migrated', '1')")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
