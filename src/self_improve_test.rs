@@ -247,3 +247,18 @@ async fn a_feature_phrase_is_not_mistaken_for_plan_approval() {
     let text = "давай ебанем фичу: разрешим тебе ходить по сайтам";
     assert!(!crate::self_improve::handle_natural_improvement(&bot, &message(10, "private", cfg.owner_id.0, text), &cfg, text).await);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn planned_feature_phrase_is_not_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
+    let bot = Bot::new("123:dummy");
+    std::fs::create_dir_all(cfg.self_improve_dir.join("outbox")).unwrap();
+    std::fs::write(cfg.self_improve_dir.join("outbox").join("plan-5.json"),
+        format!(r#"{{"id":"plan-5","status":"planned","chat_id":{},"requested_by":{},"goal":"x","created_at":1}}"#,
+            cfg.owner_id.0, cfg.owner_id.0)).unwrap();
+    let text = "давай ебанем фичу: разрешим тебе ходить по сайтам";
+    assert!(!crate::self_improve::handle_natural_improvement(&bot, &message(10, "private", cfg.owner_id.0, text), &cfg, text).await);
+    assert!(!cfg.self_improve_dir.join("plan-approvals").join("plan-5.json").exists());
+}

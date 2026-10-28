@@ -46,9 +46,11 @@ fn read_json(path: &Path) -> Option<Value> {
 fn approval_intent(text: &str) -> bool {
     let lower = text.trim().to_lowercase();
     let words: Vec<&str> = lower.split(|ch: char| !ch.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
+    let short = words.len() <= 2;
     ["да", "ага", "угу", "конечно", "делаем", "погнали", "поехали", "запускай", "го", "ок", "окей",
-        "согласен", "согласна", "утверждаю", "делай", "начинай", "апрув", "approve", "yes", "давай"]
+        "согласен", "согласна", "утверждаю", "делай", "начинай", "апрув", "approve", "yes"]
         .iter().any(|trigger| words.contains(trigger))
+        || (short && words.contains(&"давай"))
 }
 
 fn rejection_intent(text: &str) -> bool {
@@ -273,10 +275,10 @@ pub(crate) async fn handle_natural_improvement(
         None if owner && (pending.is_some() || (status_question(text) && active.is_some())) => text.trim().to_owned(),
         None => return false,
     };
+    let short_reply = prompt.split_whitespace().count() <= 3;
     if owner {
         if let Some(value) = active.as_ref() {
             let status = value.get("status").and_then(Value::as_str).unwrap_or("");
-            let short_reply = prompt.split_whitespace().count() <= 2;
             let waiting_on_plan = matches!(status, "planning" | "failed")
                 && short_reply
                 && (approval_intent(&prompt) || rejection_intent(&prompt) || refinement_intent(&prompt));
@@ -306,12 +308,12 @@ pub(crate) async fn handle_natural_improvement(
         }
         return true;
     }
-    if rejection_intent(&prompt) {
+    if short_reply && rejection_intent(&prompt) {
         let _ = atomic_write(&dir.join("rejections").join(format!("{id}.json")), b"reject");
         send_quiet(bot, message.chat.id, &format!("ок, отменил #{id}")).await;
         return true;
     }
-    if approval_intent(&prompt) {
+    if short_reply && approval_intent(&prompt) {
         let bytes = match marker(id, sender.id) {
             Ok(bytes) => bytes,
             Err(_) => return false,
