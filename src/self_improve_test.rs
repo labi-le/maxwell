@@ -1,6 +1,5 @@
 use crate::feature_support::FeatureApi;
-use crate::prelude::*;
-use crate::test_support::fake_settings;
+use crate::test_support::*;
 use crate::*;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -14,18 +13,6 @@ fn message(chat_id: i64, chat_type: &str, from: u64, text: &str) -> Message {
         "text": text
     }))
     .unwrap()
-}
-
-fn write_outbox(dir: &Path, name: &str, value: Value) {
-    let outbox = dir.join("outbox");
-    std::fs::create_dir_all(&outbox).unwrap();
-    std::fs::write(outbox.join(name), value.to_string()).unwrap();
-}
-
-fn write_inbox(dir: &Path, name: &str, value: Value) {
-    let inbox = dir.join("inbox");
-    std::fs::create_dir_all(&inbox).unwrap();
-    std::fs::write(inbox.join(name), value.to_string()).unwrap();
 }
 
 fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
@@ -252,16 +239,16 @@ async fn improved_goal_is_bounded() {
 async fn queue_feature_creates_a_plan() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
-    let id = crate::self_improve::queue_feature_refined(
-        &cfg.self_improve_dir,
-        cfg.owner_id,
-        10,
-        cfg.owner_id,
-        "Owner",
-        77,
-        "давай ебанем такую-то фичу",
-        None,
-    )
+    let id = crate::self_improve::queue_feature_refined(crate::self_improve::RefineProposal {
+        dir: &cfg.self_improve_dir,
+        owner: cfg.owner_id,
+        source_chat_id: 10,
+        proposed_by: cfg.owner_id,
+        proposer: "Owner",
+        message_id: 77,
+        goal: "давай ебанем такую-то фичу",
+        refines: None,
+    })
     .unwrap();
     let files: Vec<_> = std::fs::read_dir(cfg.self_improve_dir.join("inbox"))
         .unwrap()
@@ -281,16 +268,16 @@ async fn queue_feature_creates_a_plan() {
 async fn anyone_can_propose_a_feature_but_only_the_owner_decides() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = fake_settings(dir.path(), "#!/bin/sh\n").await;
-    crate::self_improve::queue_feature_refined(
-        &cfg.self_improve_dir,
-        cfg.owner_id,
-        10,
-        UserId(2),
-        "tester",
-        77,
-        "давай ебанем фичу: добавь кнопку",
-        None,
-    )
+    crate::self_improve::queue_feature_refined(crate::self_improve::RefineProposal {
+        dir: &cfg.self_improve_dir,
+        owner: cfg.owner_id,
+        source_chat_id: 10,
+        proposed_by: UserId(2),
+        proposer: "tester",
+        message_id: 77,
+        goal: "давай ебанем фичу: добавь кнопку",
+        refines: None,
+    })
     .unwrap();
     let files: Vec<_> = std::fs::read_dir(cfg.self_improve_dir.join("inbox"))
         .unwrap()
@@ -883,16 +870,16 @@ async fn propose_feature_refines_links_parent_without_rejection() {
             "goal": "сделай кнопку", "spec": "старая спека", "review": "старое ревью", "created_at": 1,
         }),
     );
-    let id = crate::self_improve::queue_feature_refined(
-        &cfg.self_improve_dir,
-        cfg.owner_id,
-        10,
-        cfg.owner_id,
-        "Owner",
-        77,
-        "добавь кнопку отмены",
-        Some("plan-1"),
-    )
+    let id = crate::self_improve::queue_feature_refined(crate::self_improve::RefineProposal {
+        dir: &cfg.self_improve_dir,
+        owner: cfg.owner_id,
+        source_chat_id: 10,
+        proposed_by: cfg.owner_id,
+        proposer: "Owner",
+        message_id: 77,
+        goal: "добавь кнопку отмены",
+        refines: Some("plan-1"),
+    })
     .unwrap();
     let value: Value = serde_json::from_slice(
         &std::fs::read(
@@ -940,31 +927,33 @@ async fn propose_feature_refines_rejects_non_owner_and_invalid_parent() {
             "goal": "x", "created_at": 2,
         }),
     );
-    let non_owner = crate::self_improve::queue_feature_refined(
-        &cfg.self_improve_dir,
-        cfg.owner_id,
-        10,
-        UserId(2),
-        "tester",
-        77,
-        "поправь",
-        Some("plan-1"),
-    );
+    let non_owner =
+        crate::self_improve::queue_feature_refined(crate::self_improve::RefineProposal {
+            dir: &cfg.self_improve_dir,
+            owner: cfg.owner_id,
+            source_chat_id: 10,
+            proposed_by: UserId(2),
+            proposer: "tester",
+            message_id: 77,
+            goal: "поправь",
+            refines: Some("plan-1"),
+        });
     assert_eq!(
         non_owner.unwrap_err(),
         "дорабатывать план может только владелец"
     );
     for parent in ["missing", "../x", "done"] {
-        let result = crate::self_improve::queue_feature_refined(
-            &cfg.self_improve_dir,
-            cfg.owner_id,
-            10,
-            cfg.owner_id,
-            "Owner",
-            77,
-            "поправь",
-            Some(parent),
-        );
+        let result =
+            crate::self_improve::queue_feature_refined(crate::self_improve::RefineProposal {
+                dir: &cfg.self_improve_dir,
+                owner: cfg.owner_id,
+                source_chat_id: 10,
+                proposed_by: cfg.owner_id,
+                proposer: "Owner",
+                message_id: 77,
+                goal: "поправь",
+                refines: Some(parent),
+            });
         assert!(result.is_err(), "{parent}");
     }
     assert!(!cfg.self_improve_dir.join("inbox").exists());
@@ -1295,4 +1284,190 @@ async fn cancel_command_reports_unknown_ids_without_stopping() {
         .filter(|request| request.method == "sendmessage")
         .count();
     assert_eq!(replies, 1, "a non-owner cancel sends nothing");
+}
+
+#[test]
+fn planned_notification_names_the_proposer_and_links_the_issue() {
+    let value = json!({
+        "id": "plan-1",
+        "status": "planned",
+        "goal": "добавь кнопку",
+        "spec": "спека",
+        "review": "ревью",
+        "issue_url": "https://github.com/labi-le/maxwell/issues/1",
+        "requested_by": 1,
+        "proposed_by": 2,
+        "proposed_by_name": "bob",
+    });
+    let text = crate::self_improve::notification_text(&value).unwrap();
+    assert!(text.contains("предложил: bob"));
+    assert!(text.contains("делаем или в помойку?"));
+    assert!(text.contains("https://github.com/labi-le/maxwell/issues/1"));
+    assert!(!text.contains("спека"));
+    assert!(!text.contains("ревью"));
+    let markup = crate::self_improve::notification_markup(&value).unwrap();
+    let labels = serde_json::to_string(&markup).unwrap();
+    assert!(labels.contains("Делаем"));
+    assert!(labels.contains("В помойку"));
+    assert!(!labels.contains('✅'));
+    assert!(!labels.contains('🗑'));
+}
+
+#[test]
+fn proposed_notification_has_deploy_buttons() {
+    let value = json!({
+        "id": "plan-2",
+        "status": "proposed",
+        "goal": "добавь кнопку",
+        "requested_by": 1,
+    });
+    let markup = crate::self_improve::notification_markup(&value).unwrap();
+    let labels = serde_json::to_string(&markup).unwrap();
+    assert!(labels.contains("Деплой"));
+    assert!(labels.contains("В помойку"));
+    assert!(labels.contains("approve:plan-2"));
+    assert!(labels.contains("reject:plan-2"));
+}
+
+#[test]
+fn notification_ignores_non_terminal_states() {
+    let value = json!({"id": "plan-1", "status": "planning"});
+    assert!(crate::self_improve::notification_text(&value).is_none());
+    assert!(crate::self_improve::notification_markup(&value).is_none());
+}
+
+#[test]
+fn owner_command_collects_every_id() {
+    let command =
+        crate::self_improve::parse_owner_command("отмени #214937 #214786 214779").unwrap();
+    assert_eq!(command.action, crate::self_improve::OwnerAction::Cancel);
+    assert_eq!(command.targets, vec!["214937", "214786", "214779"]);
+
+    let priority = crate::self_improve::parse_owner_command("приоритет #plan-3 7").unwrap();
+    assert_eq!(
+        priority.action,
+        crate::self_improve::OwnerAction::PrioritySet(7)
+    );
+    assert_eq!(priority.targets, vec!["plan-3"]);
+
+    let approve = crate::self_improve::parse_owner_command("одобри #plan-5.").unwrap();
+    assert_eq!(approve.targets, vec!["plan-5"]);
+    assert!(crate::self_improve::parse_owner_command("отмени").is_none());
+}
+
+#[test]
+fn decision_markup_rejects_ids_that_cannot_fit() {
+    let plan = |id: String| crate::self_improve::PendingDecision {
+        id,
+        gate: crate::self_improve::DecisionGate::Plan,
+    };
+    assert!(crate::self_improve::decision_markup(&plan("a".repeat(80))).is_none());
+    assert!(crate::self_improve::decision_markup(&plan("bad/id".into())).is_none());
+    let deploy = crate::self_improve::PendingDecision {
+        id: "plan-1".into(),
+        gate: crate::self_improve::DecisionGate::Deploy,
+    };
+    assert!(crate::self_improve::decision_markup(&deploy).is_some());
+}
+
+#[test]
+fn short_id_extracts_tail_segment() {
+    use crate::self_improve::short_task_id;
+
+    assert_eq!(short_task_id("plan-1-2-214937"), "214937");
+    assert_eq!(short_task_id("plan-1-2-999"), "plan-1-2-999");
+    assert_eq!(short_task_id("42-77"), "42-77");
+    assert_eq!(short_task_id("plan-1"), "plan-1");
+}
+
+#[test]
+fn parse_owner_command_handles_all_russian_and_slash_variants() {
+    use crate::self_improve::OwnerAction;
+
+    fn command(text: &str) -> crate::self_improve::OwnerCommand {
+        crate::self_improve::parse_owner_command(text).unwrap()
+    }
+
+    let addressed = command("максут одобри: #plan-7");
+    assert_eq!(addressed.action, OwnerAction::Approve);
+    assert_eq!(addressed.targets, vec!["plan-7"]);
+
+    let punctured = command("Максвелл, отклони #plan-8!");
+    assert_eq!(punctured.action, OwnerAction::Reject);
+    assert_eq!(punctured.targets, vec!["plan-8"]);
+
+    let top = command("подними #plan-9");
+    assert_eq!(top.action, OwnerAction::PriorityTop);
+    let bottom = command("опусти #plan-9");
+    assert_eq!(bottom.action, OwnerAction::PriorityBottom);
+
+    let clamped = command("приоритет #plan-9 5000");
+    assert_eq!(clamped.action, OwnerAction::PrioritySet(1000));
+    assert_eq!(clamped.targets, vec!["plan-9"]);
+
+    let bare = command("приоритет #plan-9");
+    assert_eq!(bare.action, OwnerAction::PrioritySet(0));
+    assert_eq!(bare.targets, vec!["plan-9"]);
+
+    assert!(crate::self_improve::parse_owner_command("/improve").is_none());
+}
+
+#[test]
+fn redact_secret_masks_tokens_and_env_secrets() {
+    use crate::self_improve::redact_secret;
+
+    let text = "ключ abc123 и запасной";
+    assert_eq!(redact_secret(text, "abc123"), "ключ [redacted] и запасной");
+    assert_eq!(redact_secret(text, ""), text);
+    assert_eq!(redact_secret("a-b-c", "-"), "a[redacted]b[redacted]c");
+}
+
+#[test]
+fn bound_result_truncates_oversized_fields_under_cap() {
+    use crate::self_improve::bound_result;
+
+    let tasks: Vec<Value> = (0..30)
+        .map(|index| {
+            json!({
+                "id": format!("plan-{index}"),
+                "status": "planned",
+                "goal": "ц".repeat(2000),
+                "summary": "с".repeat(500),
+                "files": ["src/a.rs", "src/b.rs"],
+                "issue_url": "https://github.com/labi-le/maxwell/issues/1",
+                "decision": "plan",
+                "already_decided": null,
+            })
+        })
+        .collect();
+    let result = bound_result(json!({"data_note": "данные", "tasks": tasks}));
+    let serialized = result.to_string();
+    assert!(serialized.chars().count() <= 6000, "{serialized}");
+    let kept = result["tasks"].as_array().unwrap();
+    assert!(!kept.is_empty(), "at least one gate stays visible");
+    for task in kept {
+        assert!(task["goal"].as_str().unwrap().chars().count() <= 500);
+        assert!(task["summary"].as_str().unwrap().chars().count() <= 200);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn status_snapshot_for_hides_other_users_tasks_from_non_owner() {
+    let owner = UserId(1);
+    let viewer = UserId(2);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_outbox(
+        root,
+        "owner.json",
+        json!({
+            "id": "owner", "status": "planned", "requested_by": 1,
+            "goal": "закрытая цель владельца", "created_at": 1,
+        }),
+    );
+    let value = crate::self_improve::status_snapshot_for(root, owner, viewer, Some("owner"));
+    assert_eq!(value["tasks"], json!([]), "{value}");
+    assert_eq!(value["error"], json!("не найдено"), "{value}");
+    assert!(!value.to_string().contains("закрытая цель"), "{value}");
 }

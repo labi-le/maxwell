@@ -5,11 +5,12 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
-    from tools.export_chrome_cookies import db_mtime_ns, decrypt
+    from tools.export_chrome_cookies import AesCbc, db_mtime_ns, decrypt, pkcs7_unpad, unwrap
 except ModuleNotFoundError:
-    from export_chrome_cookies import db_mtime_ns, decrypt
+    from export_chrome_cookies import AesCbc, db_mtime_ns, decrypt, pkcs7_unpad, unwrap
 
 
 def encrypt(plaintext, key):
@@ -21,6 +22,18 @@ def encrypt(plaintext, key):
         input=padded, capture_output=True, check=True,
     )
     return b"v10" + result.stdout
+
+
+class PaddingTests(unittest.TestCase):
+    def test_pkcs7_padding_is_stripped(self):
+        self.assertEqual(pkcs7_unpad(b"data" + bytes([12]) * 12), b"data")
+        self.assertEqual(pkcs7_unpad(bytes([16]) * 16), b"")
+
+    def test_malformed_padding_is_rejected(self):
+        for data in (b"", b"data" + bytes([5]) * 4, b"data" + bytes([17]),
+                     b"x" * 15 + b"\x02", b"data" + bytes([9, 3])):
+            with self.subTest(data=data):
+                self.assertIsNone(pkcs7_unpad(data))
 
 
 @unittest.skipUnless(shutil.which("openssl"), "openssl is required by the exporter")
@@ -49,6 +62,48 @@ class ChromeDecryptTests(unittest.TestCase):
         payload = hashlib.sha256(self.host.encode()).digest() + b"secret-value"
         self.assertIsNone(decrypt(b"v12" + encrypt(payload, self.key)[3:], self.host,
                                   self.key, 24))
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl is required by the exporter")
+class BatchDecryptTests(unittest.TestCase):
+    def setUp(self):
+        self.key = bytes(range(16))
+
+    def test_many_cookies_need_one_openssl_call(self):
+        hosts = [f".h{index}.example.com" for index in range(6)]
+        payloads = [hashlib.sha256(host.encode()).digest() + b"value-%d" % index
+                    for index, host in enumerate(hosts)]
+        ciphertexts = [encrypt(payload, self.key)[3:] for payload in payloads]
+        calls = []
+        real_run = subprocess.run
+
+        def counting_run(command, *args, **kwargs):
+            calls.append(command)
+            return real_run(command, *args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", counting_run):
+            plaintexts = AesCbc(self.key).decrypt_many(ciphertexts)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([pkcs7_unpad(plaintext) for plaintext in plaintexts], payloads)
+
+    def test_batch_matches_single_value_decryption(self):
+        hosts = [".example.com", ".youtube.com", ".x.com"]
+        values = ["a", "b" * 20, "c" * 32]
+        payloads = [hashlib.sha256(host.encode()).digest() + value.encode()
+                    for host, value in zip(hosts, values)]
+        encrypted = [encrypt(payload, self.key) for payload in payloads]
+        batched = AesCbc(self.key).decrypt_many([blob[3:] for blob in encrypted])
+        for host, blob, plaintext in zip(hosts, encrypted, batched):
+            self.assertEqual(unwrap(plaintext, host, 24), decrypt(blob, host, self.key, 24))
+        self.assertEqual([decrypt(blob, host, self.key, 24)
+                          for host, blob in zip(hosts, encrypted)], values)
+
+    def test_failed_batch_yields_no_values(self):
+        self.assertEqual(AesCbc(self.key).decrypt_many([]), [])
+        failure = subprocess.CompletedProcess([], 1, b"")
+        with mock.patch.object(subprocess, "run", return_value=failure):
+            self.assertEqual(
+                AesCbc(self.key).decrypt_many([b"\x00" * 16, b"\x01" * 32]), [None, None])
 
 
 class ChromeMtimeTests(unittest.TestCase):

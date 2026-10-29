@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn tiktok_photo_id(url: &Url) -> Option<&str> {
@@ -250,7 +249,8 @@ pub(crate) async fn extract_tiktok_images(
         .map_err(|_| invalid())?;
     page.set_path(&url.path().replacen("/photo/", "/video/", 1));
     page.set_query(None);
-    let cookies = tiktok_page_cookies(cfg.cookies_file.as_deref(), &page)
+    let cookies = tiktok_page_cookies_async(cfg.cookies_file.as_deref(), &page)
+        .await
         .map_err(|reason| DownloadFailure::new(reason, "photo-page", "Cookies unavailable"))?;
     let failure = |reason: &str, detail: &'static str| {
         DownloadFailure::new(reason.to_owned(), "photo-page", detail)
@@ -349,7 +349,8 @@ pub(crate) async fn extract_images(
     let failure = |reason: &str, detail: &'static str| {
         DownloadFailure::new(reason.to_owned(), "metadata", detail)
     };
-    let cookie = process_cookies(cfg.cookies_file.as_deref(), dir)
+    let cookie = process_cookies_async(cfg.cookies_file.as_deref(), dir)
+        .await
         .map_err(|reason| DownloadFailure::new(reason, "metadata", "Cookies unavailable"))?;
     let deadline = time::Instant::now() + duration;
     let mut cmd = Command::new(&cfg.ytdlp_bin);
@@ -447,17 +448,12 @@ pub(crate) fn twitter_status_id(url: &Url) -> Option<&str> {
 
 #[derive(Debug)]
 pub(crate) struct TwitterImagesError {
-    #[allow(dead_code)]
-    pub(crate) reason: String,
     pub(crate) auth: bool,
 }
 
 impl TwitterImagesError {
-    pub(crate) fn new(reason: impl Into<String>, auth: bool) -> Self {
-        Self {
-            reason: reason.into(),
-            auth,
-        }
+    pub(crate) fn new(auth: bool) -> Self {
+        Self { auth }
     }
 }
 
@@ -467,10 +463,10 @@ pub(crate) async fn extract_twitter_images(
     dir: &Path,
     duration: Duration,
 ) -> Result<ImageMetadata, TwitterImagesError> {
-    let id = twitter_status_id(url)
-        .ok_or_else(|| TwitterImagesError::new("Некорректный ID публикации X", false))?;
-    let cookie = process_cookies(cfg.cookies_file.as_deref(), dir)
-        .map_err(|reason| TwitterImagesError::new(reason, false))?;
+    let id = twitter_status_id(url).ok_or_else(|| TwitterImagesError::new(false))?;
+    let cookie = process_cookies_async(cfg.cookies_file.as_deref(), dir)
+        .await
+        .map_err(|_| TwitterImagesError::new(false))?;
     let mut cmd = Command::new(&cfg.python_bin);
     cmd.arg(&cfg.twitter_helper)
         .arg(id)
@@ -482,9 +478,7 @@ pub(crate) async fn extract_twitter_images(
     }
     #[cfg(unix)]
     cmd.as_std_mut().process_group(0);
-    let child = cmd
-        .spawn()
-        .map_err(|_| TwitterImagesError::new("Не удалось запустить извлечение фото X", false))?;
+    let child = cmd.spawn().map_err(|_| TwitterImagesError::new(false))?;
     let mut process = DownloadProcess::new(child);
     let mut stdout = process
         .child
@@ -499,34 +493,30 @@ pub(crate) async fn extract_twitter_images(
         stdout
             .read_to_end(&mut bytes)
             .await
-            .map_err(|_| TwitterImagesError::new("Ошибка чтения ответа X", false))?;
+            .map_err(|_| TwitterImagesError::new(false))?;
         if bytes.len() as u64 > MAX_TWITTER_JSON_BYTES {
-            return Err(TwitterImagesError::new("Превышен лимит ответа X", false));
+            return Err(TwitterImagesError::new(false));
         }
         let status = process
             .wait()
             .await
-            .map_err(|_| TwitterImagesError::new("Ошибка процесса извлечения X", false))?;
+            .map_err(|_| TwitterImagesError::new(false))?;
         Ok::<_, TwitterImagesError>((bytes, status))
     })
     .await
-    .map_err(|_| TwitterImagesError::new("Время извлечения фото X истекло", false))??;
+    .map_err(|_| TwitterImagesError::new(false))??;
     if !status.success() {
-        return Err(TwitterImagesError::new(
-            "Не удалось извлечь фото X",
-            status.code() == Some(3),
-        ));
+        return Err(TwitterImagesError::new(status.code() == Some(3)));
     }
-    let info: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| TwitterImagesError::new("Некорректный ответ извлечения фото X", false))?;
+    let info: Value = serde_json::from_slice(&bytes).map_err(|_| TwitterImagesError::new(false))?;
     let urls = info
         .get("photos")
         .and_then(Value::as_array)
-        .ok_or_else(|| TwitterImagesError::new("Некорректный ответ извлечения фото X", false))?;
+        .ok_or_else(|| TwitterImagesError::new(false))?;
     let has_video = info
         .get("has_video")
         .and_then(Value::as_bool)
-        .ok_or_else(|| TwitterImagesError::new("Некорректный ответ извлечения фото X", false))?;
+        .ok_or_else(|| TwitterImagesError::new(false))?;
     let mut result = ImageMetadata {
         images: Vec::new(),
         has_video,

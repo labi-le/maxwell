@@ -1,22 +1,27 @@
+import io
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 try:
     from tools.cookie_refresh_service import (
         BadRequest, Config, ExportResult, Handler, RefreshResult, RefreshService,
-        Server, Unavailable, _drain, covers, install_jar, parse_jar, parse_targets, summary_mtime,
+        Server, Unavailable, _drain, covers, install_jar, parse_jar, parse_targets,
+        run_exporter, summary_mtime,
     )
 except ModuleNotFoundError:
     from cookie_refresh_service import (
         BadRequest, Config, ExportResult, Handler, RefreshResult, RefreshService,
-        Server, Unavailable, _drain, covers, install_jar, parse_jar, parse_targets, summary_mtime,
+        Server, Unavailable, _drain, covers, install_jar, parse_jar, parse_targets,
+        run_exporter, summary_mtime,
     )
 
 
@@ -248,6 +253,58 @@ class DrainTests(unittest.TestCase):
         limit = 1024
         result = _drain(self.Stream(b"x" * (limit + 5)), limit)
         self.assertEqual(len(result), limit + 1)
+
+
+class FakeProcess:
+    def __init__(self, stdout=b"", stderr=b"", returncode=0, timeout=False):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self.returncode = returncode
+        self.timeout = timeout
+        self.killed = False
+        self.waits = []
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.timeout:
+            self.timeout = False
+            raise subprocess.TimeoutExpired("ssh", timeout)
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+class ExporterProcessTests(unittest.TestCase):
+    source = b"print('synthetic')\n"
+
+    def run_under_test(self, process):
+        with tempfile.TemporaryDirectory() as root:
+            config = make_config(root)
+            with mock.patch.object(subprocess, "Popen", return_value=process):
+                return config, run_exporter("pc", config, self.source)
+
+    def test_pipes_are_closed_after_a_normal_run(self):
+        process = FakeProcess(stdout=b"# Netscape HTTP Cookie File\n", stderr=b"db_mtime_ns=7\n")
+        config, result = self.run_under_test(process)
+        self.assertEqual(result, ExportResult(0, b"# Netscape HTTP Cookie File\n",
+                                              b"db_mtime_ns=7\n"))
+        self.assertEqual(process.waits, [config.ssh_timeout])
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    def test_pipes_are_closed_after_a_timeout(self):
+        process = FakeProcess(stdout=b"partial", timeout=True)
+        _, result = self.run_under_test(process)
+        self.assertTrue(process.killed)
+        self.assertEqual(process.waits, [1, 1])
+        self.assertEqual(result, ExportResult(-9, b"partial", b""))
+        self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
 
 
 class StubRefreshService:

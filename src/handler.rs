@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) async fn handle_command(bot: &Bot, message: &Message, cfg: &Settings, command: &str) {
@@ -72,7 +71,14 @@ async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: 
     }
     // A standalone «да»/«нет» must not hide a pending plan/deploy gate from
     // the model. The read-only probe writes nothing.
-    if crate::self_improve::has_pending_decision(&cfg.self_improve_dir, cfg.owner_id) {
+    let improve_dir = cfg.self_improve_dir.clone();
+    let owner_id = cfg.owner_id;
+    let has_pending = tokio::task::spawn_blocking(move || {
+        crate::self_improve::has_pending_decision(&improve_dir, owner_id)
+    })
+    .await
+    .unwrap_or(false);
+    if has_pending {
         return false;
     }
     let Some(unique_id) = sticker_rule(text) else {
@@ -97,17 +103,25 @@ async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: 
     if let Ok(sent) = request.disable_notification(true).await {
         let _ = crate::memory::record_message(
             &cfg.database,
-            message.chat.id,
-            0,
-            "максут",
-            "assistant",
-            "[стикер]",
-            Some(sent.id.0),
-            crate::memory::FLAG_JUNK,
+            RecordMessage::new(message.chat.id, 0, "максут", "assistant", "[стикер]")
+                .with_message_id(Some(sent.id.0))
+                .with_flags(crate::memory::FLAG_JUNK),
         )
         .await;
     }
     true
+}
+
+fn user_record<'a>(
+    message: &Message,
+    author_id: i64,
+    author_name: &'a str,
+    text: &'a str,
+    flags: i64,
+) -> RecordMessage<'a> {
+    RecordMessage::new(message.chat.id, author_id, author_name, "user", text)
+        .with_message_id(Some(message.id.0))
+        .with_flags(flags)
 }
 
 pub(crate) async fn handle_message(
@@ -145,13 +159,7 @@ pub(crate) async fn handle_message(
                 let flags = flags | crate::memory::FLAG_IGNORED;
                 let _ = crate::memory::record_message(
                     &cfg.database,
-                    message.chat.id,
-                    sender.id.0 as i64,
-                    &sender_name,
-                    "user",
-                    log_text,
-                    Some(message.id.0),
-                    flags,
+                    user_record(&message, sender.id.0 as i64, &sender_name, log_text, flags),
                 )
                 .await;
                 return Ok(());
@@ -180,13 +188,7 @@ pub(crate) async fn handle_message(
             let flags = flags | crate::memory::FLAG_INJECTION | crate::memory::FLAG_IGNORED;
             let _ = crate::memory::record_message(
                 &cfg.database,
-                message.chat.id,
-                sender.id.0 as i64,
-                &sender_name,
-                "user",
-                log_text,
-                Some(message.id.0),
-                flags,
+                user_record(&message, sender.id.0 as i64, &sender_name, log_text, flags),
             )
             .await;
             return Ok(());
@@ -218,13 +220,7 @@ pub(crate) async fn handle_message(
         flags |= crate::memory::FLAG_JUNK;
         let _ = crate::memory::record_message(
             &cfg.database,
-            message.chat.id,
-            sender.id.0 as i64,
-            &sender_name,
-            "user",
-            log_text,
-            Some(message.id.0),
-            flags,
+            user_record(&message, sender.id.0 as i64, &sender_name, log_text, flags),
         )
         .await;
         if crate::self_improve::handle_improve(&bot, &message, &cfg, text).await {
@@ -238,13 +234,7 @@ pub(crate) async fn handle_message(
     if message.chat.is_private() && sender.id != cfg.owner_id {
         let _ = crate::memory::record_message(
             &cfg.database,
-            message.chat.id,
-            sender.id.0 as i64,
-            &sender_name,
-            "user",
-            log_text,
-            Some(message.id.0),
-            flags,
+            user_record(&message, sender.id.0 as i64, &sender_name, log_text, flags),
         )
         .await;
         return Ok(());
@@ -254,13 +244,7 @@ pub(crate) async fn handle_message(
     }
     let _ = crate::memory::record_message(
         &cfg.database,
-        message.chat.id,
-        sender.id.0 as i64,
-        &sender_name,
-        "user",
-        log_text,
-        Some(message.id.0),
-        flags,
+        user_record(&message, sender.id.0 as i64, &sender_name, log_text, flags),
     )
     .await;
     if owner
@@ -299,28 +283,20 @@ pub(crate) async fn handle_message(
             } else {
                 prompt
             };
-            reply_with_chat(
-                &bot,
-                &message,
-                &cfg,
-                sender.id,
-                &sender_name,
+            let turn = ChatTurn {
+                chat_id: message.chat.id,
+                user_id: sender.id,
+                sender_name: sender_name.as_str(),
+                message_id: message.id.0,
                 owner,
-                &prompt,
-                image.as_ref(),
-            )
-            .await;
+                prompt: prompt.as_str(),
+                image: image.as_ref(),
+            };
+            reply_with_chat(&bot, &message, &cfg, &turn).await;
         }
         return Ok(());
     };
-    let user_semaphore = {
-        let mut limits = cfg.user_rate_limits.write().await;
-        Arc::clone(
-            limits
-                .entry(sender.id)
-                .or_insert_with(|| Arc::new(Semaphore::new(USER_DOWNLOAD_LIMIT))),
-        )
-    };
+    let user_semaphore = cfg.user_rate_limit(sender.id).await;
     let Ok(_user_permit) = user_semaphore.try_acquire_owned() else {
         record_failure(
             &cfg.database,

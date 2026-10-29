@@ -1,5 +1,8 @@
-use crate::prelude::*;
 use crate::*;
+
+// Both caches are keyed by remote identifiers, so they must not grow forever.
+const MAX_CHAT_LOCKS: usize = 1024;
+const MAX_USER_RATE_LIMITS: usize = 2048;
 
 #[derive(Clone)]
 pub(crate) struct Settings {
@@ -54,7 +57,7 @@ impl Settings {
             Ok(key) if !key.trim().is_empty() => {
                 let base =
                     env::var("LLM_BASE_URL").unwrap_or_else(|_| DEFAULT_LLM_BASE.to_string());
-                let base = parse_llm_url(&base, "LLM_BASE_URL")?;
+                let base = parse_http_endpoint(&base, "LLM_BASE_URL")?;
                 let tavily_key = env::var("TAVILY_API_KEY")
                     .ok()
                     .filter(|value| !value.trim().is_empty());
@@ -74,7 +77,7 @@ impl Settings {
                 };
                 let search =
                     env::var("LLM_SEARCH_URL").unwrap_or_else(|_| search_default.to_string());
-                let search = parse_llm_url(&search, "LLM_SEARCH_URL")?;
+                let search = parse_http_endpoint(&search, "LLM_SEARCH_URL")?;
                 let model = env::var("LLM_MODEL").unwrap_or_else(|_| DEFAULT_LLM_MODEL.to_string());
                 if model.trim().is_empty() {
                     return Err("LLM_MODEL must not be empty".into());
@@ -88,7 +91,7 @@ impl Settings {
         let cookie_refresh_url = env::var("COOKIE_REFRESH_URL")
             .ok()
             .filter(|value| !value.is_empty())
-            .map(|value| parse_cookie_refresh_url(&value))
+            .map(|value| parse_http_endpoint(&value, "COOKIE_REFRESH_URL"))
             .transpose()?;
         Ok(Self {
             owner_id: UserId(owner_id),
@@ -123,11 +126,47 @@ impl Settings {
 impl Settings {
     pub(crate) async fn chat_lock(&self, chat_id: i64) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.chat_locks.lock().await;
+        if locks.len() >= MAX_CHAT_LOCKS && !locks.contains_key(&chat_id) {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+            if locks.len() >= MAX_CHAT_LOCKS {
+                let idle = locks
+                    .iter()
+                    .find(|(_, lock)| Arc::strong_count(lock) == 1)
+                    .map(|(chat_id, _)| *chat_id);
+                if let Some(idle) = idle {
+                    locks.remove(&idle);
+                }
+            }
+        }
         Arc::clone(locks.entry(chat_id).or_default())
+    }
+
+    pub(crate) async fn user_rate_limit(&self, user_id: UserId) -> Arc<Semaphore> {
+        let mut limits = self.user_rate_limits.write().await;
+        if limits.len() >= MAX_USER_RATE_LIMITS && !limits.contains_key(&user_id) {
+            limits.retain(|_, semaphore| {
+                semaphore.available_permits() < USER_DOWNLOAD_LIMIT
+                    || Arc::strong_count(semaphore) > 1
+            });
+            if limits.len() >= MAX_USER_RATE_LIMITS {
+                let idle = limits
+                    .iter()
+                    .find(|(_, semaphore)| Arc::strong_count(semaphore) == 1)
+                    .map(|(user_id, _)| *user_id);
+                if let Some(idle) = idle {
+                    limits.remove(&idle);
+                }
+            }
+        }
+        Arc::clone(
+            limits
+                .entry(user_id)
+                .or_insert_with(|| Arc::new(Semaphore::new(USER_DOWNLOAD_LIMIT))),
+        )
     }
 }
 
-pub(crate) fn parse_llm_url(raw: &str, name: &str) -> Result<Url, String> {
+pub(crate) fn parse_http_endpoint(raw: &str, name: &str) -> Result<Url, String> {
     let url = Url::parse(raw).map_err(|_| format!("{name} must be a valid URL"))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -148,21 +187,4 @@ pub(crate) fn check_cookies(path: &Path) -> Result<(), String> {
         return Err("COOKIES_FILE must point to a readable regular file".into());
     }
     Ok(())
-}
-
-pub(crate) fn parse_cookie_refresh_url(raw: &str) -> Result<Url, String> {
-    let url = Url::parse(raw).map_err(|_| "COOKIE_REFRESH_URL must be a valid URL".to_string())?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(
-            "COOKIE_REFRESH_URL must be an http(s) URL without credentials, query, or fragment"
-                .into(),
-        );
-    }
-    Ok(url)
 }

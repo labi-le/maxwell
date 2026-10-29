@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) async fn download_videos(
@@ -39,12 +38,12 @@ pub(crate) async fn download_videos(
     if auth_failure {
         if cfg.cookies_file.is_some()
             && time::Instant::now() < deadline
-            && retryable_output(dir, cfg.max_media_bytes)
+            && retryable_output(dir, cfg.max_media_bytes).await
             && request_cookie_refresh(cfg, cookie_source(url), deadline, &mut first.events).await
             && time::Instant::now() < deadline
         {
             // Reuse the selected format, without a second metadata probe or fallback.
-            if clear_failed_attempt(dir).is_ok() && time::Instant::now() < deadline {
+            if clear_failed_attempt(dir).await.is_ok() && time::Instant::now() < deadline {
                 trace_event(
                     &mut first.events,
                     FailureDiagnostic::new("retry", "Started"),
@@ -89,11 +88,11 @@ pub(crate) async fn download_videos(
         || interrupted
         || !first.selection.files.is_empty()
         || time::Instant::now() >= deadline
-        || !retryable_output(dir, cfg.max_media_bytes)
+        || !retryable_output(dir, cfg.max_media_bytes).await
     {
         return Ok(first);
     }
-    if let Err(reason) = clear_failed_attempt(dir) {
+    if let Err(reason) = clear_failed_attempt(dir).await {
         return Err(DownloadFailure {
             reason,
             diagnostic: FailureDiagnostic::new("yt-dlp", "Download failed"),
@@ -135,7 +134,7 @@ pub(crate) async fn download_videos_attempt(
     deadline: time::Instant,
     selected_format: Option<&str>,
 ) -> Result<(DownloadResult, bool), String> {
-    let cookie = process_cookies(cfg.cookies_file.as_deref(), dir)?;
+    let cookie = process_cookies_async(cfg.cookies_file.as_deref(), dir).await?;
     let manifest = dir.join("completed-paths.txt");
     let output = dir.join("%(playlist_index|0)s-%(id)s-%(autonumber)s.%(ext)s");
     let mut cmd = Command::new(&cfg.ytdlp_bin);
@@ -233,7 +232,7 @@ pub(crate) async fn download_videos_attempt(
                 break process.wait().await.map_err(|_| "Ошибка процесса yt-dlp".to_string())?;
             }
             _ = interval.tick() => {
-                let usage = match disk_usage(dir) {
+                let usage = match disk_usage_async(dir).await {
                     Ok(usage) => usage,
                     Err(_) => {
                         process.stop();
@@ -250,7 +249,8 @@ pub(crate) async fn download_videos_attempt(
         }
     };
     let label = process.stderr_label(deadline).await;
-    let selection = select_media(dir, &manifest, cfg.max_media_bytes)
+    let selection = select_media_async(dir, &manifest, cfg.max_media_bytes)
+        .await
         .map_err(|_| "Ошибка чтения загруженных файлов".to_string())?;
     let file_descriptions = process
         .stdout_records(deadline)

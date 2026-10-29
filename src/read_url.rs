@@ -1,14 +1,13 @@
 use crate::permitted_ipv4;
 use crate::prelude::*;
 use dom_smoothie::{Config, Readability, TextMode};
-use serde_json::Value;
 use std::sync::{LazyLock, Mutex};
 
 const READ_URL_MAX_BYTES: usize = 2 * 1024 * 1024;
-const READ_URL_MAX_CHARS: usize = 24_000;
+pub(crate) const READ_URL_MAX_CHARS: usize = 24_000;
 const READ_URL_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_URL_TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
-const READ_URL_TITLE_CHARS: usize = 200;
+pub(crate) const READ_URL_TITLE_CHARS: usize = 200;
 const READ_URL_MAX_REDIRECTS: usize = 5;
 const READ_URL_CACHE_TTL: Duration = Duration::from_secs(600);
 const READ_URL_CACHE_ENTRIES: usize = 16;
@@ -219,7 +218,7 @@ pub(crate) fn allowed_target(raw: &str, allowed: &[Url]) -> bool {
     matches!(target.scheme(), "http" | "https") && allowed.iter().any(|url| url == &target)
 }
 
-fn validate_url(url: &Url) -> Result<(), ReadUrlError> {
+pub(crate) fn validate_url(url: &Url) -> Result<(), ReadUrlError> {
     match url.scheme() {
         "http" | "https" => {}
         _ => return Err(ReadUrlError::UnsupportedScheme),
@@ -299,7 +298,11 @@ async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, ReadUrlEr
     Ok(body)
 }
 
-fn render_page(url: &Url, content_type: &str, body: &[u8]) -> Result<ReadPage, ReadUrlError> {
+pub(crate) fn render_page(
+    url: &Url,
+    content_type: &str,
+    body: &[u8],
+) -> Result<ReadPage, ReadUrlError> {
     let kind = content_type
         .split(';')
         .next()
@@ -346,7 +349,7 @@ fn render_page(url: &Url, content_type: &str, body: &[u8]) -> Result<ReadPage, R
     Ok(ReadPage { text: header })
 }
 
-fn decode_body(body: &[u8], content_type: &str) -> String {
+pub(crate) fn decode_body(body: &[u8], content_type: &str) -> String {
     let header_encoding = content_type.split(';').skip(1).find_map(|part| {
         let (key, value) = part.split_once('=')?;
         if !key.trim().eq_ignore_ascii_case("charset") {
@@ -363,7 +366,10 @@ fn decode_body(body: &[u8], content_type: &str) -> String {
     encoding.decode(body).0.into_owned()
 }
 
-fn extract_html(html: &str, url: &Url) -> Result<(Option<String>, String), ReadUrlError> {
+pub(crate) fn extract_html(
+    html: &str,
+    url: &Url,
+) -> Result<(Option<String>, String), ReadUrlError> {
     if html_is_too_complex(html) {
         return Err(ReadUrlError::TooComplex);
     }
@@ -402,7 +408,7 @@ fn extract_html(html: &str, url: &Url) -> Result<(Option<String>, String), ReadU
     Ok(((!title.is_empty()).then_some(title), text))
 }
 
-fn clean_document(html: &str) -> dom_query::Document {
+pub(crate) fn clean_document(html: &str) -> dom_query::Document {
     let document = dom_query::Document::from(html);
     document
         .select(
@@ -412,11 +418,11 @@ fn clean_document(html: &str) -> dom_query::Document {
     document
 }
 
-fn fallback_text(document: &dom_query::Document) -> String {
+pub(crate) fn fallback_text(document: &dom_query::Document) -> String {
     document.select_single("body").formatted_text().to_string()
 }
 
-fn sanitize_title(raw: &str) -> String {
+pub(crate) fn sanitize_title(raw: &str) -> String {
     let cleaned: String = raw.chars().filter(|ch| !ch.is_control()).collect();
     truncate_chars(
         &cleaned.split_whitespace().collect::<Vec<_>>().join(" "),
@@ -529,7 +535,7 @@ fn is_void_element(name: &str) -> bool {
     )
 }
 
-fn normalize_text(raw: &str) -> String {
+pub(crate) fn normalize_text(raw: &str) -> String {
     let mut lines = Vec::new();
     let mut blank = false;
     for line in raw.lines() {
@@ -547,7 +553,7 @@ fn normalize_text(raw: &str) -> String {
     lines.join("\n").trim().to_owned()
 }
 
-fn truncate_chars(text: &str, max: usize) -> (String, bool) {
+pub(crate) fn truncate_chars(text: &str, max: usize) -> (String, bool) {
     if max == 0 {
         return (String::new(), !text.is_empty());
     }
@@ -580,161 +586,4 @@ fn cache_put(url: String, page: ReadPage) {
         }
     }
     cache.insert(url, CachedPage { page, at: now });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_only_public_http_urls() {
-        for raw in [
-            "http://localhost/",
-            "http://127.0.0.1/",
-            "http://10.0.0.1/",
-            "http://192.168.1.1/",
-            "http://intranet/",
-            "file:///etc/passwd",
-            "ftp://example.com/",
-            "http://user:pass@example.com/",
-            "http://example.com:8080/",
-        ] {
-            let url = Url::parse(raw).unwrap();
-            assert!(validate_url(&url).is_err(), "{raw} must be rejected");
-        }
-        assert!(validate_url(&Url::parse("https://example.com/article").unwrap()).is_ok());
-        assert!(validate_url(&Url::parse("http://example.com/article").unwrap()).is_ok());
-    }
-
-    #[test]
-    fn extracts_article_and_skips_chrome() {
-        let html = r#"
-            <html><head><title>Заголовок статьи</title>
-            <style>body { color: red }</style></head>
-            <body>
-              <nav>меню сайта</nav>
-              <article>
-                <h1>Заголовок статьи</h1>
-                <p>Первый <b>абзац</b> статьи.</p>
-                <p>Второй абзац.</p>
-                <script>alert('x')</script>
-              </article>
-              <footer>подвал</footer>
-            </body></html>
-        "#;
-        let (title, text) =
-            extract_html(html, &Url::parse("https://example.com/article").unwrap()).unwrap();
-        assert_eq!(title.as_deref(), Some("Заголовок статьи"));
-        let text = normalize_text(&text);
-        assert!(text.contains("Первый"), "{text}");
-        assert!(text.contains("абзац"), "{text}");
-        assert!(text.contains("статьи."), "{text}");
-        assert!(text.contains("Второй абзац."), "{text}");
-        assert!(!text.contains("меню сайта"), "{text}");
-        assert!(!text.contains("подвал"), "{text}");
-        assert!(!text.contains("alert"), "{text}");
-    }
-
-    #[test]
-    fn renders_text_with_a_limit() {
-        let body = b"hello\n\n\nworld";
-        let page = render_page(
-            &Url::parse("https://example.com/a").unwrap(),
-            "text/plain",
-            body,
-        )
-        .unwrap();
-        assert!(page.text.contains("hello"));
-        assert!(page.text.contains("world"));
-    }
-
-    #[tokio::test]
-    #[ignore = "network smoke test"]
-    async fn live_fetch_example_page() {
-        let page = read("https://example.com/").await.unwrap();
-        assert!(page.text.contains("Example Domain"), "{}", page.text);
-    }
-
-    #[tokio::test]
-    #[ignore = "network smoke test"]
-    async fn live_fetch_article_page() {
-        let page = read("https://en.wikipedia.org/wiki/Rust_(programming_language)")
-            .await
-            .unwrap();
-        assert!(page.text.contains("Rust"), "{}", page.text);
-        assert!(page.text.chars().count() <= READ_URL_MAX_CHARS + 200);
-    }
-
-    #[test]
-    fn fallback_drops_scripts_and_preserves_spacing() {
-        let document = clean_document(
-            "<html><body><script>alert('secret')</script><style>.x{}</style>             <p>hello <b>world</b></p></body></html>",
-        );
-        let text = fallback_text(&document);
-        assert!(text.contains("hello world"), "{text}");
-        assert!(!text.contains("secret"), "{text}");
-        assert!(!text.contains(".x"), "{text}");
-    }
-
-    #[test]
-    fn oversized_titles_are_capped_and_sanitized() {
-        let raw = format!("{}\n\u{0007}{}", "a".repeat(5_000), "b".repeat(5_000));
-        let title = sanitize_title(&raw);
-        assert!(title.chars().count() <= READ_URL_TITLE_CHARS);
-        assert!(!title.chars().any(char::is_control));
-    }
-
-    #[test]
-    fn tiny_pages_fall_back_to_body_text() {
-        let html = "<html><head><title>Tiny</title></head><body><p>hello</p></body></html>";
-        let (title, text) =
-            extract_html(html, &Url::parse("https://example.com/tiny").unwrap()).unwrap();
-        assert_eq!(title.as_deref(), Some("Tiny"));
-        assert!(text.contains("hello"), "{text}");
-    }
-
-    #[test]
-    fn decodes_declared_non_utf8_charsets() {
-        let (bytes, _, _) = encoding_rs::WINDOWS_1251.encode("привет");
-        assert_eq!(
-            decode_body(&bytes, "text/plain; charset=windows-1251"),
-            "привет"
-        );
-    }
-
-    #[test]
-    fn only_urls_from_the_prompt_are_allowed() {
-        let prompt = "прочитай https://example.com/article?x=1 и всё";
-        let allowed = prompt_urls(prompt);
-        assert!(allowed_target("https://example.com/article?x=1", &allowed));
-        assert!(!allowed_target("https://example.com/article?x=2", &allowed));
-        assert!(!allowed_target(
-            "https://attacker.example/?q=chat-summary",
-            &allowed
-        ));
-        assert!(!allowed_target(
-            "https://example.com/article?x=1&q=secret",
-            &allowed
-        ));
-    }
-
-    #[test]
-    fn deeply_nested_html_does_not_overflow() {
-        let html = format!(
-            "{}deep text{}",
-            "<div>".repeat(5_000),
-            "</div>".repeat(5_000)
-        );
-        assert!(matches!(
-            extract_html(&html, &Url::parse("https://example.com/deep").unwrap()),
-            Err(ReadUrlError::TooComplex)
-        ));
-    }
-
-    #[test]
-    fn truncation_does_not_split_utf8() {
-        let (text, truncated) = truncate_chars("привет", 2);
-        assert_eq!(text, "пр");
-        assert!(truncated);
-    }
 }

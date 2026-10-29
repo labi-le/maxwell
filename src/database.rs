@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) async fn open_database(url: &str) -> Result<SqlitePool, sqlx::Error> {

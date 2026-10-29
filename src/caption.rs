@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn escape_html_attribute(value: &str) -> String {

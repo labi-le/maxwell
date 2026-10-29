@@ -26,7 +26,7 @@ The self-improvement system is split across three isolated processes:
    - Rejecting a plan closes the GitHub issue (`"План отклонён владельцем."`) and marks the task `rejected`.
 4. **Implementation and offline testing (`implement_planned` / `implement`):**
    - Creates a fresh detached worktree at `base` and runs `implementer` (`tools="read,write,edit,grep,glob"`, `MODEL`, `MAX_COST="0.50"`, `IMPLEMENTER_TIMEOUT=900`).
-   - Rejects empty diffs, any path matching `FORBIDDEN` (`docs/communication-guide.md`, `AGENTS.md`, `.env`, `.secrets/`, `self-improve/`, `self_improve/`, `tools/self_improve_orchestrator.py`, `tools/self_improve_deploy.py`, `tools/omp_worker.py`, `target/`), or any output/diff containing `LLM_API_KEY`.
+   - Rejects empty diffs, any path matching `FORBIDDEN` (`docs/communication-guide.md`, `AGENTS.md`, `Dockerfile`, `compose.yaml`, `Cargo.lock`, `shell.nix`, `.env`, `.secrets/`, `cookie_refresh/`, `cookie-refresh/`, `packaging/`, `self-improve/`, `self_improve/`, `tools/self_improve_orchestrator.py`, `tools/self_improve_deploy.py`, `tools/omp_worker.py`, `target/`), or any output/diff containing `LLM_API_KEY`.
    - Commits on branch `improve/<id>` and runs `cargo test --offline` inside `maksut-self-improve-test` (`--network none`, `/nix/store:ro` mounted for `ffmpeg`).
    - Writes `status: "proposed"` (or `"failed"`) and test logs (`self-improve/logs/<id>-tests.log`).
 5. **Deploy approval and rollback (`approvals/` -> `deploy`):**
@@ -35,7 +35,7 @@ The self-improvement system is split across three isolated processes:
    - If `build` or health checks fail, it reverses the patch (`git apply -R`), retags the previous image (`maksut-maksut`), restarts the container with `--no-build`, and marks the task `failed`.
    - On success, it marks the task `deployed`, closes the GitHub issue (`"Задеплоено."`), and removes the worktree and profile directory.
 
-## Task IDs, priority, and cancellation (`src/self_improve.rs`)
+## Task IDs, priority, and cancellation (`src/improve_commands.rs`)
 
 - **Task ID matching:** IDs such as `plan-1793270374-1002045081420-214537` display as `#214537` (`short_task_id`). Owner commands accept the full ID, the short numeric tail (`214537`), or any unique numeric prefix/suffix (`37`). Ambiguous fragments return the candidate list instead of guessing or claiming the task is missing.
 - **Batch cancel:** `отмени #id1 #id2` (or `/improve cancel <id>`) cancels pending tasks (`inbox` or waiting at a gate) in a single reply; already-running tasks are reported separately and are not killed mid-flight.

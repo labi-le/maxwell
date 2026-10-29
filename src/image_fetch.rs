@@ -1,14 +1,17 @@
-use crate::prelude::*;
 use crate::*;
 
+// A shared anycast address cannot identify a host, so the cache is keyed by both.
+const MAX_PINNED_CLIENTS: usize = 256;
+const PINNED_CLIENT_TTL: Duration = Duration::from_secs(3600);
+
 pub(crate) struct CachedPinnedClient {
-    pub(crate) host: String,
     pub(crate) addresses: Vec<SocketAddr>,
     pub(crate) client: reqwest::Client,
+    pub(crate) cached_at: std::time::Instant,
 }
 
 pub(crate) static PINNED_CLIENTS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<IpAddr, CachedPinnedClient>>,
+    std::sync::Mutex<std::collections::HashMap<(String, IpAddr), CachedPinnedClient>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 // Pin resolved addresses and disable redirects for both photos and short links.
@@ -22,12 +25,12 @@ pub(crate) async fn pinned_client(url: &Url) -> Result<reqwest::Client, String> 
     if addresses.is_empty() {
         return Err("HTTPS-хост не имеет пригодного IPv4-адреса".into());
     }
-    let ip = addresses[0].ip();
+    let key = (host.to_owned(), addresses[0].ip());
     let mut cache = PINNED_CLIENTS.lock().ok();
-    if let Some(cached) = cache.as_ref().and_then(|cache| cache.get(&ip)) {
-        // A host-specific DNS override cannot safely be reused for another host
-        // or after DNS removes one of its previously pinned addresses.
-        if cached.host == host && cached.addresses == addresses {
+    if let Some(cached) = cache.as_ref().and_then(|cache| cache.get(&key)) {
+        // A host-specific DNS override cannot be reused after DNS removes one of
+        // its previously pinned addresses.
+        if cached.cached_at.elapsed() < PINNED_CLIENT_TTL && cached.addresses == addresses {
             return Ok(cached.client.clone());
         }
     }
@@ -39,12 +42,22 @@ pub(crate) async fn pinned_client(url: &Url) -> Result<reqwest::Client, String> 
         .build()
         .map_err(|_| "Не удалось настроить безопасное HTTPS-подключение".to_string())?;
     if let Some(cache) = cache.as_mut() {
+        cache.retain(|_, entry| entry.cached_at.elapsed() < PINNED_CLIENT_TTL);
+        if cache.len() >= MAX_PINNED_CLIENTS && !cache.contains_key(&key) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.cached_at)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                cache.remove(&oldest);
+            }
+        }
         cache.insert(
-            ip,
+            key,
             CachedPinnedClient {
-                host: host.to_owned(),
                 addresses,
                 client: client.clone(),
+                cached_at: std::time::Instant::now(),
             },
         );
     }
@@ -103,16 +116,7 @@ pub(crate) async fn save_image_response(
             "Temporary storage limit",
         ));
     }
-    let target = dir.join(name);
-    let temp = tempfile::Builder::new()
-        .prefix("photo-")
-        .suffix(".part")
-        .tempfile_in(dir)
-        .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
-    let mut file = tokio::fs::File::from_std(
-        temp.reopen()
-            .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?,
-    );
+    let mut body = Vec::new();
     let mut size = 0u64;
     while let Some(chunk) = response.chunk().await.map_err(|error| {
         FailureDiagnostic::new(
@@ -134,20 +138,43 @@ pub(crate) async fn save_image_response(
                 "Temporary storage limit",
             ));
         }
-        file.write_all(&chunk)
-            .await
-            .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
+        body.extend_from_slice(&chunk);
     }
-    file.flush()
-        .await
-        .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
-    drop(file);
     if size == 0 {
         return Err(FailureDiagnostic::new("photo-cdn", "Empty photo"));
     }
-    temp.persist_noclobber(&target)
+    let target = dir.join(name);
+    let dir = dir.to_owned();
+    tokio::task::spawn_blocking(move || persist_photo(&dir, &target, &body))
+        .await
+        .unwrap_or_else(|_| Err(FailureDiagnostic::new("photo-cdn", "File I/O error")))
+}
+
+fn persist_photo(dir: &Path, target: &Path, body: &[u8]) -> Result<(), FailureDiagnostic> {
+    let mut temp = tempfile::Builder::new()
+        .prefix("photo-")
+        .suffix(".part")
+        .tempfile_in(dir)
+        .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
+    temp.write_all(body)
+        .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
+    temp.persist_noclobber(target)
         .map_err(|_| FailureDiagnostic::new("photo-cdn", "File I/O error"))?;
     Ok(())
+}
+
+// The manifest is shared with yt-dlp; only this append's byte delta belongs to the total.
+fn append_manifest_entry(photo: &Path, manifest: &Path) -> std::io::Result<u64> {
+    let metadata = fs::metadata(photo)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(manifest)?;
+    let previous_size = file.metadata()?.len();
+    writeln!(file, "{}", photo.display())?;
+    Ok(metadata
+        .len()
+        .saturating_add(file.metadata()?.len().saturating_sub(previous_size)))
 }
 
 pub(crate) async fn add_images(
@@ -155,13 +182,13 @@ pub(crate) async fn add_images(
     alternates: &[Vec<Url>],
     cfg: &Settings,
     dir: &Path,
-    manifest: &Path,
     max_files: usize,
     selection: &mut Selection,
     deadline: time::Instant,
 ) -> Result<(), Vec<FailureDiagnostic>> {
+    let manifest = dir.join("completed-paths.txt");
     let mut failures = Vec::new();
-    let mut used = disk_usage(dir);
+    let mut used = disk_usage_async(dir).await;
     for (index, first) in images.iter().enumerate() {
         if selection.files.len() == max_files {
             selection.skipped += images.len() - index;
@@ -260,21 +287,17 @@ pub(crate) async fn add_images(
             match outcome {
                 Ok(Ok((ext, name))) => {
                     let path = dir.join(name);
-                    let appended = fs::metadata(&path).and_then(|metadata| {
-                        let mut file = fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(manifest)?;
-                        let previous_size = file.metadata()?.len();
-                        writeln!(file, "{}", path.display())?;
-                        Ok(metadata
-                            .len()
-                            .saturating_add(file.metadata()?.len().saturating_sub(previous_size)))
-                    });
+                    let photo = path.clone();
+                    let manifest_path = manifest.clone();
+                    let appended = tokio::task::spawn_blocking(move || {
+                        append_manifest_entry(&photo, &manifest_path)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err(std::io::Error::other("manifest task failed")));
                     let added = match appended {
                         Ok(added) => added,
                         Err(_) => {
-                            let _ = fs::remove_file(&path);
+                            let _ = tokio::fs::remove_file(&path).await;
                             failure = Some(FailureDiagnostic::new("photo-cdn", "File I/O error"));
                             break;
                         }

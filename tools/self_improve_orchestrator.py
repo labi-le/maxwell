@@ -52,7 +52,15 @@ FORBIDDEN = (
     "tools/self_improve_deploy.py",
     "tools/omp_worker.py",
     "target/",
+    "Dockerfile",
+    "compose.yaml",
+    "cookie_refresh/",
+    "cookie-refresh/",
+    "packaging/",
+    "shell.nix",
+    "Cargo.lock",
 )
+MAX_PROCESSED = 1000
 
 
 def log(message: str) -> None:
@@ -81,19 +89,22 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 def status(task: dict, state: str, summary: str = "", **extra) -> None:
+    def pick(name: str, default=""):
+        return extra[name] if name in extra else task.get(name, default)
+
     value = {
         "id": task["id"],
         "status": state,
         "summary": summary[:2000],
-        "chat_id": int(extra.get("chat_id", task.get("chat_id", 0)) or 0),
-        "goal": extra.get("goal", task.get("goal", "")),
-        "stage": extra.get("stage", task.get("stage", "")),
-        "source_chat_id": int(extra.get("source_chat_id", task.get("source_chat_id", 0)) or 0),
-        "proposed_by": int(extra.get("proposed_by", task.get("proposed_by", 0)) or 0),
-        "proposed_by_name": extra.get("proposed_by_name", task.get("proposed_by_name", "")),
-        "issue_url": extra.get("issue_url", task.get("issue_url", "")),
-        "spec": extra.get("spec", task.get("spec", "")),
-        "review": extra.get("review", task.get("review", "")),
+        "chat_id": int(pick("chat_id", 0) or 0),
+        "goal": pick("goal"),
+        "stage": pick("stage"),
+        "source_chat_id": int(pick("source_chat_id", 0) or 0),
+        "proposed_by": int(pick("proposed_by", 0) or 0),
+        "proposed_by_name": pick("proposed_by_name"),
+        "issue_url": pick("issue_url"),
+        "spec": pick("spec"),
+        "review": pick("review"),
         "files": extra.get("files", []),
         "tests": extra.get("tests", ""),
         "diff_stat": extra.get("diff_stat", ""),
@@ -101,9 +112,14 @@ def status(task: dict, state: str, summary: str = "", **extra) -> None:
         "branch": extra.get("branch", ""),
         "worktree": extra.get("worktree", ""),
         "log": extra.get("log", ""),
-        "priority": int(extra.get("priority", task.get("priority", 0)) or 0),
-        "created_at": int(time.time()),
+        "priority": int(pick("priority", 0) or 0),
+        "created_at": int(task.get("created_at") or extra.get("created_at") or time.time()),
+        "updated_at": int(time.time()),
     }
+    for name in ("requested_by", "parent", "feedback", "previous_spec", "previous_review"):
+        found = extra[name] if name in extra else task.get(name)
+        if found is not None:
+            value[name] = found
     atomic_json(QUEUE / "outbox" / f"{task['id']}.json", value)
     log(f"task {task['id']}: {state}")
 
@@ -165,6 +181,13 @@ def make_worktree(task_id: str, base: str) -> Path:
     worktree.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "-C", str(REPO), "worktree", "add", "--detach", str(worktree), base], check=True)
     return worktree
+
+
+def cleanup_worktree(task_id: str, worktree: Path, delete_branch: bool = False) -> None:
+    run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(worktree)], check=False)
+    shutil.rmtree(worktree, ignore_errors=True)
+    if delete_branch:
+        run(["git", "-C", str(REPO), "branch", "-D", f"improve/{task_id}"], check=False)
 
 
 def implementation_prompt(task: dict) -> str:
@@ -394,90 +417,99 @@ def close_issue(value: dict, comment: str = "План отклонён влад�
 def plan_task(task: dict) -> None:
     base = base_commit(task["id"])
     worktree = make_worktree(task["id"], base)
-    status(task, "planning", "planner started", stage="plan", base=base)
-    spec_ok, spec = run_agent(
-        task, worktree, planner_prompt(task), "read,grep,glob",
-        PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "planner", PLAN_THINKING,
-    )
-    if not spec_ok or not spec.strip():
+    try:
+        status(task, "planning", "planner started", stage="plan", base=base)
+        spec_ok, spec = run_agent(
+            task, worktree, planner_prompt(task), "read,grep,glob",
+            PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "planner", PLAN_THINKING,
+        )
+        if not spec_ok or not spec.strip():
+            status(task, "failed", "planner failed", stage="plan", base=base)
+            return
+        key = read_llm_key()
+        if key and key in spec:
+            status(task, "failed", "credential appeared in planner output", stage="plan", base=base)
+            return
+        spec = spec[-24000:]
+        review_ok, review = run_agent(
+            task, worktree, reviewer_prompt(task, spec), "read,grep,glob",
+            PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "reviewer", PLAN_REVIEW_THINKING,
+        )
+        if not review_ok or not review.strip():
+            reason = "reviewer timeout" if review.strip() == "reviewer timeout" else "reviewer failed"
+            status(task, "failed", reason, stage="plan", base=base)
+            return
+        if key and key in review:
+            status(task, "failed", "credential appeared in reviewer output", stage="plan", base=base)
+            return
+        issue_url = create_issue(task, spec, review)
+        status(
+            task, "planned", "план и ревью готовы", stage="plan", base=base,
+            spec=spec, review=review[-16000:], chat_id=task.get("chat_id", 0),
+            issue_url=issue_url,
+        )
+    finally:
         shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
-        status(task, "failed", "planner failed", stage="plan", base=base)
-        return
-    key = read_llm_key()
-    if key and key in spec:
-        shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
-        status(task, "failed", "credential appeared in planner output", stage="plan", base=base)
-        return
-    spec = spec[-24000:]
-    review_ok, review = run_agent(
-        task, worktree, reviewer_prompt(task, spec), "read,grep,glob",
-        PLAN_MODEL, PLAN_TIMEOUT, PLAN_MAX_COST, "reviewer", PLAN_REVIEW_THINKING,
-    )
-    shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
-    if not review_ok or not review.strip():
-        reason = "reviewer timeout" if review.strip() == "reviewer timeout" else "reviewer failed"
-        status(task, "failed", reason, stage="plan", base=base)
-        return
-    if key and key in review:
-        status(task, "failed", "credential appeared in reviewer output", stage="plan", base=base)
-        return
-    issue_url = create_issue(task, spec, review)
-    status(
-        task, "planned", "план и ревью готовы", stage="plan", base=base,
-        spec=spec, review=review[-16000:], chat_id=task.get("chat_id", 0),
-        issue_url=issue_url,
-    )
-    run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(worktree)], check=False)
-    shutil.rmtree(worktree, ignore_errors=True)
+        cleanup_worktree(task["id"], worktree)
 
 
 def implement(task: dict, base: str, worktree: Path) -> None:
-    status(task, "running", "implementer started", base=base, stage=task.get("stage", ""))
-    ok, impl_output = run_implementer(task, worktree)
-    shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
-    key = read_llm_key()
-    if key and key in impl_output:
-        status(task, "failed", "credential appeared in implementer output", base=base)
-        return
-    if not ok:
-        status(task, "failed", impl_output or "implementer failed", base=base)
-        return
-    paths = changed_paths(worktree)
-    if not paths:
-        status(task, "failed", "implementer made no changes", base=base)
-        return
-    forbidden = check_diff(paths)
-    if forbidden:
-        status(task, "failed", forbidden, files=paths, base=base)
-        return
-    if contains_key(worktree, paths, read_llm_key()):
-        status(task, "failed", "credential appeared in the diff", files=paths, base=base)
-        return
-    branch = f"improve/{task['id']}"
-    run(["git", "-C", str(worktree), "switch", "-c", branch], check=True)
-    run(["git", "-C", str(worktree), "add", "-A"], check=True)
-    commit = run([
-        "git", "-C", str(worktree), "-c", "user.name=Maksut self-improve",
-        "-c", "user.email=self-improve@localhost", "commit", "-m", f"self-improve: {task['id']}",
-    ], check=False)
-    if commit.returncode != 0:
-        status(task, "failed", output(commit) or "commit failed", base=base)
-        return
-    diff_stat = run(["git", "-C", str(worktree), "diff", "--stat", base, branch], check=False).stdout[-2000:]
-    tests_ok, tests = test_worktree(worktree)
-    state = "proposed" if tests_ok else "failed"
-    summary = (impl_output[-1500:] + "\n" + diff_stat).strip()
-    log_path = QUEUE / "logs" / f"{task['id']}-tests.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(tests)
-    log_path.chmod(0o600)
-    if tests_ok:
-        status(task, state, summary, files=paths, tests="ok", diff_stat=diff_stat,
+    succeeded = False
+
+    def fail(summary: str, **extra) -> None:
+        status(task, "failed", summary, base=base, **extra)
+
+    try:
+        status(task, "running", "implementer started", base=base, stage=task.get("stage", ""))
+        ok, impl_output = run_implementer(task, worktree)
+        shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
+        key = read_llm_key()
+        if key and key in impl_output:
+            fail("credential appeared in implementer output")
+            return
+        if not ok:
+            fail(impl_output or "implementer failed")
+            return
+        paths = changed_paths(worktree)
+        if not paths:
+            fail("implementer made no changes")
+            return
+        forbidden = check_diff(paths)
+        if forbidden:
+            fail(forbidden, files=paths)
+            return
+        if contains_key(worktree, paths, key):
+            fail("credential appeared in the diff", files=paths)
+            return
+        branch = f"improve/{task['id']}"
+        run(["git", "-C", str(worktree), "switch", "-c", branch], check=True)
+        run(["git", "-C", str(worktree), "add", "-A"], check=True)
+        commit = run([
+            "git", "-C", str(worktree), "-c", "user.name=Maksut self-improve",
+            "-c", "user.email=self-improve@localhost", "commit", "-m", f"self-improve: {task['id']}",
+        ], check=False)
+        if commit.returncode != 0:
+            fail(output(commit) or "commit failed")
+            return
+        diff_stat = run(
+            ["git", "-C", str(worktree), "diff", "--stat", base, branch], check=False
+        ).stdout[-2000:]
+        tests_ok, tests = test_worktree(worktree)
+        summary = (impl_output[-1500:] + "\n" + diff_stat).strip()
+        log_path = QUEUE / "logs" / f"{task['id']}-tests.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(tests)
+        log_path.chmod(0o600)
+        if not tests_ok:
+            fail(summary, files=paths, tests=tests[-1000:], diff_stat=diff_stat, log=str(log_path))
+            return
+        status(task, "proposed", summary, files=paths, tests="ok", diff_stat=diff_stat,
                base=base, branch=branch, worktree=str(worktree), log=str(log_path),
                stage=task.get("stage", ""))
-    else:
-        status(task, state, summary, files=paths, tests=tests[-1000:], diff_stat=diff_stat,
-               base=base, log=str(log_path), stage=task.get("stage", ""))
+        succeeded = True
+    finally:
+        if not succeeded:
+            cleanup_worktree(task["id"], worktree, delete_branch=True)
 
 
 def implement_planned(value: dict) -> None:
@@ -493,6 +525,12 @@ def implement_planned(value: dict) -> None:
         "spec": value.get("spec", ""),
         "review": value.get("review", ""),
         "stage": "plan",
+        "created_at": value.get("created_at", 0),
+        "requested_by": value.get("requested_by"),
+        "parent": value.get("parent"),
+        "feedback": value.get("feedback", ""),
+        "previous_spec": value.get("previous_spec", ""),
+        "previous_review": value.get("previous_review", ""),
     }
     base = value.get("base", "")
     if not base:
@@ -573,13 +611,22 @@ def deploy(task: dict, base: str, branch: str, worktree: Path, paths: list[str])
     shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
 
 
+def valid_approval_marker(approval: dict, task_id: str) -> bool:
+    return (
+        isinstance(approval, dict)
+        and approval.get("id") == task_id
+        and approval.get("requested_by") == OWNER
+    )
+
+
 def process_planned_approval(value: dict) -> None:
     task_id = value.get("id")
     rejection = QUEUE / "rejections" / f"{task_id}.json"
     approval = QUEUE / "plan-approvals" / f"{task_id}.json"
     if rejection.exists():
+        rejection.unlink(missing_ok=True)
         close_issue(value)
-        status({"id": task_id}, "rejected", "owner rejected the plan", stage="plan")
+        status(value, "rejected", "owner rejected the plan", stage="plan")
         return
     if not approval.exists():
         return
@@ -587,12 +634,14 @@ def process_planned_approval(value: dict) -> None:
         approved = json.loads(approval.read_text())
     except (OSError, json.JSONDecodeError):
         approved = {}
-    if approved.get("id") != task_id or approved.get("requested_by") != OWNER:
-        status({"id": task_id}, "failed", "invalid plan approval", stage="plan")
+    if not valid_approval_marker(approved, task_id):
+        approval.unlink(missing_ok=True)
+        log(f"task {task_id}: ignored invalid approval marker")
         return
     if not value.get("base"):
-        status({"id": task_id}, "failed", "plan has no base commit", stage="plan")
+        status(value, "failed", "plan has no base commit", stage="plan")
         return
+    approval.unlink(missing_ok=True)
     implement_planned(value)
 
 
@@ -626,7 +675,8 @@ def process_approvals() -> None:
         rejection = QUEUE / "rejections" / f"{task_id}.json"
         approval = QUEUE / "approvals" / f"{task_id}.json"
         if rejection.exists():
-            status({"id": task_id}, "rejected", "owner rejected")
+            rejection.unlink(missing_ok=True)
+            status(value, "rejected", "owner rejected")
             if worktree.is_dir():
                 run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(worktree)], check=False)
             shutil.rmtree(QUEUE / "profile" / task_id, ignore_errors=True)
@@ -637,11 +687,13 @@ def process_approvals() -> None:
             approved = json.loads(approval.read_text())
         except (OSError, json.JSONDecodeError):
             approved = {}
-        if approved.get("id") != task_id or approved.get("requested_by") != OWNER:
-            status({"id": task_id}, "failed", "invalid approval")
+        if not valid_approval_marker(approved, task_id):
+            approval.unlink(missing_ok=True)
+            log(f"task {task_id}: ignored invalid approval marker")
             continue
+        approval.unlink(missing_ok=True)
         if not base or not branch or not worktree.is_dir():
-            status({"id": task_id}, "failed", "proposal worktree is missing")
+            status(value, "failed", "proposal worktree is missing")
             continue
         deploy({
             "id": task_id,
@@ -654,6 +706,9 @@ def process_approvals() -> None:
             "spec": value.get("spec", ""),
             "review": value.get("review", ""),
             "issue_url": value.get("issue_url", ""),
+            "created_at": value.get("created_at", 0),
+            "requested_by": value.get("requested_by"),
+            "parent": value.get("parent"),
         }, base, branch, worktree, value.get("files", []))
 
 def valid_task(value: dict) -> bool:
@@ -682,8 +737,7 @@ def main() -> int:
         (QUEUE / name).mkdir(parents=True, exist_ok=True)
     for profile in (QUEUE / "profile").glob("*"):
         shutil.rmtree(profile, ignore_errors=True)
-    (QUEUE / "off").unlink(missing_ok=True)
-    processed: set[str] = set()
+    processed: dict[str, None] = {}
     while True:
         if (QUEUE / "off").exists():
             time.sleep(POLL_SECONDS)
@@ -702,7 +756,9 @@ def main() -> int:
             if not valid_task(task) or task["id"] in processed:
                 path.unlink(missing_ok=True)
                 continue
-            processed.add(task["id"])
+            processed[task["id"]] = None
+            if len(processed) > MAX_PROCESSED:
+                del processed[next(iter(processed))]
             path.unlink(missing_ok=True)
             try:
                 propose(task)

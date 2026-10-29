@@ -1,10 +1,5 @@
-use crate::prelude::*;
+use crate::test_support::*;
 use crate::*;
-use serde_json::json;
-
-fn empty_parameters() -> Value {
-    json!({"type": "object", "properties": {}})
-}
 
 fn probe(visibility: ToolVisibility) -> ToolSpec {
     ToolSpec {

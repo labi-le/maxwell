@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn allowed_url(raw: &str) -> Option<Url> {

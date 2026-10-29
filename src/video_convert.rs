@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn convertible_video(path: &Path) -> bool {
@@ -149,19 +148,25 @@ pub(crate) async fn convert_video(
     deadline: time::Instant,
 ) -> Result<tempfile::TempPath, String> {
     check_video_dimensions(dimensions)?;
-    let parent = path.parent().ok_or("Не удалось подготовить конвертацию")?;
-    let output = tempfile::Builder::new()
-        .prefix("inline-")
-        .suffix(".mp4")
-        .tempfile_in(parent)
-        .map_err(|_| "Не удалось подготовить конвертацию")?
-        .into_temp_path();
+    let parent = path
+        .parent()
+        .ok_or("Не удалось подготовить конвертацию")?
+        .to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        tempfile::Builder::new()
+            .prefix("inline-")
+            .suffix(".mp4")
+            .tempfile_in(&parent)
+            .map(|file| file.into_temp_path())
+    })
+    .await
+    .map_err(|_| "Не удалось подготовить конвертацию")?
+    .map_err(|_| "Не удалось подготовить конвертацию")?;
     let output_path: &Path = output.as_ref();
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-nostdin").arg("-v").arg("error").arg("-y")
         .arg("-filter_threads").arg("2")
         .arg("-max_pixels").arg(MAX_VIDEO_PIXELS.to_string())
-        .arg("-threads:v").arg("2")
         .arg("-i").arg(path).arg("-map").arg("0:V:0").arg("-map").arg("0:a:0")
         .arg("-vf").arg("scale=w='min(1920,iw)':h='min(1920,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2")
         .arg("-c:v").arg("libx264").arg("-threads:v").arg("2")
@@ -180,23 +185,35 @@ pub(crate) async fn convert_video(
         time::Instant::now() + Duration::from_millis(300),
         Duration::from_millis(300),
     );
-    loop {
+    let failure = loop {
         tokio::select! {
             result = process.wait() => {
                 if !result.is_ok_and(|status| status.success()) {
                     return Err("Не удалось конвертировать видео".into());
                 }
-                break;
+                break None;
             }
-            _ = time::sleep_until(deadline) => return Err("Превышено время конвертации видео".into()),
+            _ = time::sleep_until(deadline) => break Some("Превышено время конвертации видео"),
             _ = interval.tick() => {
-                if fs::metadata(&output).map_err(|_| "Ошибка проверки размера видео")?.len() > max_bytes {
-                    return Err("Видео после конвертации превышает лимит размера".into());
+                match tokio::fs::metadata(&output).await {
+                    Ok(metadata) if metadata.len() > max_bytes => {
+                        break Some("Видео после конвертации превышает лимит размера");
+                    }
+                    Ok(_) => {}
+                    Err(_) => break Some("Ошибка проверки размера видео"),
                 }
             }
         }
+    };
+    if let Some(reason) = failure {
+        // ffmpeg still holds the output open, so it must be reaped before unlinking.
+        process.stop();
+        let _ = process.wait().await;
+        let _ = tokio::fs::remove_file(output_path).await;
+        return Err(reason.to_string());
     }
-    let size = fs::metadata(&output)
+    let size = tokio::fs::metadata(&output)
+        .await
         .map_err(|_| "Ошибка проверки размера видео")?
         .len();
     if size == 0 || size > max_bytes {

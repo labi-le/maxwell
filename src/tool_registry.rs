@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// Visibility contract: `All` means the tool is safe for any chat participant.
 /// Never mark a tool with owner-only side effects as `All`. Access always goes
@@ -81,7 +81,7 @@ pub(crate) struct ToolSpec {
 
 #[derive(Clone, Default)]
 pub(crate) struct ToolRegistry {
-    specs: Vec<ToolSpec>,
+    pub(crate) specs: Vec<ToolSpec>,
 }
 
 impl ToolRegistry {
@@ -184,17 +184,6 @@ impl ToolRegistry {
         self.visible(owner).map(|spec| spec.name).collect()
     }
 
-    /// JSON array for the request's `tools` field; `None` when nothing is visible.
-    pub(crate) fn payload(&self, owner: bool) -> Option<Value> {
-        self.payload_for(owner, true)
-    }
-
-    /// Feature snapshots are only offered when a `FeatureProposal` context is
-    /// available; without it the model must not see the schemas at all.
-    pub(crate) fn payload_for(&self, owner: bool, feature_tools: bool) -> Option<Value> {
-        self.payload_for_mode(owner, feature_tools, false, false, false)
-    }
-
     /// After a successful research pass the model sees only read-only research
     /// tools. Side effects stay available only when the user asked for them
     /// explicitly; untrusted source text must not be able to trigger them.
@@ -223,21 +212,7 @@ impl ToolRegistry {
                 })
             })
             .collect();
-        (!tools.is_empty()).then(|| Value::Array(tools))
-    }
-
-    /// Test-only injection: replaces a same-name spec in place, appends a new one.
-    #[cfg(test)]
-    pub(crate) fn with(mut self, spec: ToolSpec) -> Self {
-        match self
-            .specs
-            .iter()
-            .position(|existing| existing.name == spec.name)
-        {
-            Some(index) => self.specs[index] = spec,
-            None => self.specs.push(spec),
-        }
-        self
+        (!tools.is_empty()).then_some(Value::Array(tools))
     }
 }
 

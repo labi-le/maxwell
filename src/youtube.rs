@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn youtube_duration_filter() -> String {
@@ -163,7 +162,7 @@ pub(crate) async fn probe_youtube_mp4(
     dir: &Path,
     deadline: time::Instant,
 ) -> Result<Option<String>, &'static str> {
-    let Ok(cookie) = process_cookies(cfg.cookies_file.as_deref(), dir) else {
+    let Ok(cookie) = process_cookies_async(cfg.cookies_file.as_deref(), dir).await else {
         return Ok(None);
     };
     let mut cmd = Command::new(&cfg.ytdlp_bin);

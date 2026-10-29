@@ -23,7 +23,7 @@ pub(crate) use teloxide::{
     },
 };
 pub(crate) use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     net::lookup_host,
     process::Command,
     sync::{RwLock, Semaphore},

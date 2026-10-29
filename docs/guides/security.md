@@ -1,12 +1,12 @@
 # Security and correctness invariants
 
-> **When to read this:** Read before touching URL handling (`src/links.rs`, `src/images.rs`, `src/image_fetch.rs`, `src/read_url.rs`), tool registration or dispatch (`src/tool_registry.rs`, `src/chat.rs`, `src/code_inspect.rs`), prompt/memory filtering (`src/memory.rs`), cookies (`src/cookies.rs`, `src/cookie_refresh.rs`, `tools/cookie_refresh_service.py`), or the self-improvement sandbox (`src/self_improve.rs`, `tools/self_improve_orchestrator.py`, `tools/omp_worker.py`).
+> **When to read this:** Read before touching URL handling (`src/links.rs`, `src/images.rs`, `src/image_fetch.rs`, `src/read_url.rs`), prompt assembly, tool registration or dispatch (`src/chat_client.rs`, `src/chat.rs`, `src/chat_tools.rs`, `src/tool_registry.rs`, `src/code_inspect.rs`), prompt/memory filtering (`src/memory.rs`), cookies (`src/cookies.rs`, `src/cookie_refresh.rs`, `tools/cookie_refresh_service.py`), or the self-improvement queue and sandbox (`src/improve_store.rs`, `src/improve_views.rs`, `src/improve_commands.rs`, `src/self_improve.rs`, `tools/self_improve_orchestrator.py`, `tools/omp_worker.py`).
 
 ## Read-only and forbidden paths
 
-- `docs/communication-guide.md` is **read-only**. It is compiled into `maksut` via `include_str!("../docs/communication-guide.md")` in `src/chat.rs`. Never edit, reformat, or regenerate it; change bot behavior in code, `SYSTEM_PROMPT`, tool descriptions, `README.md`, or `docs/`.
+- `docs/communication-guide.md` is **read-only**. It is compiled into `maksut` via `include_str!("../docs/communication-guide.md")` in `src/chat_client.rs`. Never edit, reformat, or regenerate it; change bot behavior in code, `SYSTEM_PROMPT`, tool descriptions, `README.md`, or `docs/`.
 - In the self-improvement pipeline, `tools/self_improve_orchestrator.py` enforces `FORBIDDEN`:
-  `docs/communication-guide.md`, `AGENTS.md`, `.env`, `.secrets/`, `self-improve/`, `self_improve/`, `tools/self_improve_orchestrator.py`, `tools/self_improve_deploy.py`, `tools/omp_worker.py`, and `target/`. Any diff touching those paths or containing `LLM_API_KEY` is rejected before commit or deploy.
+  `docs/communication-guide.md`, `AGENTS.md`, `Dockerfile`, `compose.yaml`, `Cargo.lock`, `shell.nix`, `.env`, `.secrets/`, `cookie_refresh/`, `cookie-refresh/`, `packaging/`, `self-improve/`, `self_improve/`, `tools/self_improve_orchestrator.py`, `tools/self_improve_deploy.py`, `tools/omp_worker.py`, and `target/`. Any diff touching those paths or containing `LLM_API_KEY` is rejected before commit or deploy.
 
 ## Untrusted URLs and SSRF gates
 
@@ -22,8 +22,8 @@ Every URL from a chat message, redirect header, metadata payload, or search resu
 
 - **Single authorization point (`src/tool_registry.rs`, [ADR 015](../adr/015-tool-registry.md)).** `ToolRegistry::find(name, owner)` is the only gate between a model tool call and execution. Never check tool names against a separate string list. Adding a `ToolVisibility::All` tool exposes it to every user in every enabled group; tools with owner-only side effects or private data (`feature_confirmation`, `inspect_code`, `find_stickers`, `send_sticker`) must stay `ToolVisibility::Owner`.
 - **Owner-only prompt isolation (`src/chat.rs`).** Instructions for `Owner` tools (`OWNER_STICKER_PROMPT`, `OWNER_FEATURE_PROMPT`) are appended only when `owner == true` (and when the queue context is present). Never mention owner-only tools in `SYSTEM_PROMPT`.
-- **Post-research privilege reduction (`src/tool_registry.rs`, `src/chat.rs`, [ADR 016](../adr/016-research.md)).** Search results and `read_url` pages are untrusted data. After a successful `research` pass, both `payload_for_mode` and the tool dispatcher restrict available tools to `web_search`, `research`, and `read_url` unless the user's own prompt explicitly asked for a sticker or a feature.
-- **Snapshot confinement (`src/code_inspect.rs`, [ADR 018](../adr/018-owner-code-inspection.md)).** `inspect_code` canonicalizes `base` (`/var/lib/maksut/code`), canonicalizes any requested relative path, verifies `candidate.starts_with(&base)`, skips symlinks during directory traversal, skips `.git`, `target`, `self-improve`, `self_improve`, `cookies`, `.secrets`, and `node_modules`, and allows only `rs`, `toml`, `md`, `py`, `yaml`, `yml`, `json`, and `sh` files up to 256 KiB.
+- **Post-research privilege reduction (`src/tool_registry.rs`, `src/chat_tools.rs`, [ADR 016](../adr/016-research.md)).** Search results and `read_url` pages are untrusted data. After a successful `research` pass, both `payload_for_mode` and the tool dispatcher restrict available tools to `web_search`, `research`, and `read_url` unless the user's own prompt explicitly asked for a sticker or a feature.
+- **Snapshot confinement (`src/code_inspect.rs`, [ADR 018](../adr/018-owner-code-inspection.md)).** `inspect_code` canonicalizes `base` (`/var/lib/maksut/code`), canonicalizes any requested relative path, verifies `candidate.starts_with(&base)`, rejects a directly requested file whose path below `base` contains a hidden or skipped component, skips symlinks during directory traversal, skips `.git`, `target`, `self-improve`, `self_improve`, `cookies`, `.secrets`, and `node_modules`, and allows only `rs`, `toml`, `md`, `py`, `yaml`, `yml`, `json`, and `sh` files up to 256 KiB.
 
 ## Prompt injection and chat memory hygiene
 

@@ -190,6 +190,39 @@ pub(crate) fn validate_cookie_jar(source: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// Jar parsing touches a bind mount synchronously, so callers inside async
+// tasks hand it to a blocking worker instead of stalling the runtime.
+async fn blocking_cookies<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(task)
+        .await
+        .unwrap_or_else(|_| Err("Не удалось подготовить cookies".to_string()))
+}
+
+pub(crate) async fn process_cookies_async(
+    source: Option<&Path>,
+    dir: &Path,
+) -> Result<Option<(tempfile::TempDir, PathBuf)>, String> {
+    let source = source.map(Path::to_path_buf);
+    let dir = dir.to_path_buf();
+    blocking_cookies(move || process_cookies(source.as_deref(), &dir)).await
+}
+
+pub(crate) async fn validate_cookie_jar_async(source: &Path) -> Result<(), String> {
+    let source = source.to_path_buf();
+    blocking_cookies(move || validate_cookie_jar(&source)).await
+}
+
+pub(crate) async fn tiktok_page_cookies_async(
+    source: Option<&Path>,
+    page: &Url,
+) -> Result<Option<String>, String> {
+    let source = source.map(Path::to_path_buf);
+    let page = page.clone();
+    blocking_cookies(move || tiktok_page_cookies(source.as_deref(), &page)).await
+}
+
 // Each subprocess owns a writable jar inside the request's private directory.
 // The bind-mounted source is opened only for reading and is never passed to yt-dlp.
 pub(crate) fn process_cookies(

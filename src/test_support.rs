@@ -1,5 +1,5 @@
-use crate::prelude::*;
 use crate::*;
+pub(crate) use tokio::io::AsyncWriteExt;
 
 pub(crate) fn av_fixture() -> &'static Path {
     static FILE: std::sync::LazyLock<tempfile::NamedTempFile> = std::sync::LazyLock::new(|| {
@@ -354,40 +354,13 @@ pub(crate) async fn recording_bot(
     let server = tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let (end, length) = loop {
-                let count = stream.read(&mut chunk).await.unwrap();
-                if count == 0 {
-                    panic!("incomplete Bot API request");
-                }
-                bytes.extend_from_slice(&chunk[..count]);
-                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&bytes[..end]);
-                    let length = headers.lines().find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length: ")
-                            .and_then(|length| length.parse::<usize>().ok())
-                    });
-                    break (end + 4, length);
-                }
-            };
-            while match length {
-                Some(length) => bytes.len() < end + length,
-                None => !bytes.ends_with(b"0\r\n\r\n"),
-            } {
-                let count = stream.read(&mut chunk).await.unwrap();
-                if count == 0 {
-                    panic!("incomplete Bot API body");
-                }
-                bytes.extend_from_slice(&chunk[..count]);
-            }
-            let path = String::from_utf8_lossy(&bytes)
+            let (head, body) = read_bot_api_request(&mut stream).await;
+            let path = head
                 .split_whitespace()
                 .nth(1)
-                .unwrap()
-                .to_string();
-            let body = String::from_utf8_lossy(&bytes[end..]).into_owned();
+                .expect("Bot API request path")
+                .to_owned();
+            let body = String::from_utf8_lossy(&body).into_owned();
             let response = if (api_method_is(&path, "sendVideo") && !video_ok)
                 || (api_method_is(&path, "deleteMessage") && !delete_ok)
             {
@@ -421,6 +394,102 @@ pub(crate) async fn recording_bot(
     )
 }
 
+const FIXTURE_REQUEST_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Teloxide streams multipart uploads chunked, so every Bot API fixture decodes the
+/// head and body through this one bounded parser.
+pub(crate) async fn read_bot_api_request(stream: &mut tokio::net::TcpStream) -> (String, Vec<u8>) {
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        if let Some(end) = test_find(&bytes, b"\r\n\r\n") {
+            break end + 4;
+        }
+        read_fixture_bytes(stream, &mut bytes, "Bot API request").await;
+    };
+    let head = String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+    let header = |name: &str| {
+        head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
+    };
+    let chunked = header("transfer-encoding")
+        .is_some_and(|encoding| encoding.eq_ignore_ascii_case("chunked"));
+    let body = if chunked {
+        read_chunked_body(stream, &mut bytes, header_end).await
+    } else {
+        let length = header("content-length").map_or(0, |length| {
+            length
+                .parse::<usize>()
+                .expect("numeric Bot API body length")
+        });
+        assert!(length <= FIXTURE_REQUEST_LIMIT, "bounded Bot API body");
+        while bytes.len() < header_end + length {
+            read_fixture_bytes(stream, &mut bytes, "Bot API body").await;
+        }
+        bytes[header_end..header_end + length].to_vec()
+    };
+    (head, body)
+}
+
+async fn read_fixture_bytes(stream: &mut tokio::net::TcpStream, bytes: &mut Vec<u8>, stage: &str) {
+    let mut chunk = [0u8; 4096];
+    let count = stream.read(&mut chunk).await.unwrap();
+    assert_ne!(count, 0, "incomplete {stage}");
+    bytes.extend_from_slice(&chunk[..count]);
+    assert!(
+        bytes.len() <= FIXTURE_REQUEST_LIMIT,
+        "fixture request exceeded bounded body size"
+    );
+}
+
+async fn read_chunked_body(
+    stream: &mut tokio::net::TcpStream,
+    bytes: &mut Vec<u8>,
+    mut cursor: usize,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        let line_end = loop {
+            if let Some(end) = test_find(&bytes[cursor..], b"\r\n") {
+                break cursor + end;
+            }
+            read_fixture_bytes(stream, bytes, "HTTP chunk header").await;
+        };
+        let size = std::str::from_utf8(&bytes[cursor..line_end])
+            .expect("ASCII HTTP chunk size")
+            .split(';')
+            .next()
+            .expect("HTTP chunk size")
+            .trim();
+        let size = usize::from_str_radix(size, 16).expect("hexadecimal HTTP chunk size");
+        assert!(size <= FIXTURE_REQUEST_LIMIT, "bounded HTTP chunk size");
+        cursor = line_end + 2;
+        if size == 0 {
+            // Trailers, not a raw-body terminator, follow the last chunk.
+            loop {
+                let end = loop {
+                    if let Some(end) = test_find(&bytes[cursor..], b"\r\n") {
+                        break cursor + end;
+                    }
+                    read_fixture_bytes(stream, bytes, "HTTP chunk trailer").await;
+                };
+                if end == cursor {
+                    return body;
+                }
+                cursor = end + 2;
+            }
+        }
+        while bytes.len() < cursor + size + 2 {
+            read_fixture_bytes(stream, bytes, "HTTP chunk payload").await;
+        }
+        body.extend_from_slice(&bytes[cursor..cursor + size]);
+        assert_eq!(&bytes[cursor + size..cursor + size + 2], b"\r\n");
+        cursor += size + 2;
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn api_method_is(path: &str, method: &str) -> bool {
     path.rsplit('/')
@@ -442,16 +511,27 @@ pub(crate) async fn assert_descendant_stopped(pid: i32) {
 }
 
 #[cfg(unix)]
+pub(crate) struct CaptionDelivery<'a> {
+    pub(crate) metadata: Value,
+    pub(crate) downloaded: (Option<&'a str>, Option<&'a str>),
+    pub(crate) message_text: Option<&'a str>,
+    pub(crate) sender: Value,
+    pub(crate) video_ok: bool,
+}
+
+#[cfg(unix)]
 pub(crate) async fn metadata_caption_recorded_delivery(
     root: &Path,
     url: &str,
-    metadata: &Value,
-    downloaded_title: Option<&str>,
-    downloaded_description: Option<&str>,
-    message_text: Option<&str>,
-    sender: Value,
-    video_ok: bool,
+    delivery: CaptionDelivery<'_>,
 ) -> (Vec<(String, String)>, usize) {
+    let CaptionDelivery {
+        metadata,
+        downloaded: (downloaded_title, downloaded_description),
+        message_text,
+        sender,
+        video_ok,
+    } = delivery;
     let script = format!(
         r#"#!/bin/sh
 # CUSTOM_METADATA
@@ -511,10 +591,6 @@ pub(crate) fn metadata_caption_from_upload(body: &str) -> &str {
         .expect("multipart caption field")
         .split_once("\r\n\r\n")
         .expect("multipart caption value")
-        .1
-        .trim_start_matches("\r\n")
-        .split_once("\r\n")
-        .expect("caption chunk size")
         .1
         .split("\r\n")
         .next()
@@ -607,3 +683,190 @@ pub(crate) fn body_of(request: &str) -> Value {
     let (_, body) = request.split_once("\r\n\r\n").unwrap_or(("", ""));
     serde_json::from_str(body).unwrap_or(Value::Null)
 }
+
+pub(crate) async fn download(
+    url: &Url,
+    cfg: &Settings,
+    dir: &Path,
+) -> Result<DownloadResult, String> {
+    download_with_timeout(url, cfg, dir, DOWNLOAD_TIMEOUT)
+        .await
+        .map_err(|failure| failure.reason)
+}
+
+impl StickerReplies {
+    pub(crate) fn for_tests() -> Self {
+        Self(
+            RULES
+                .iter()
+                .map(|rule| {
+                    (
+                        rule.unique_id,
+                        FileId(format!("sticker-{}", rule.unique_id)),
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl StickerCatalog {
+    pub(crate) fn for_tests(entries: &[(&str, &str, &str, &str, &str)]) -> Self {
+        Self {
+            entries: entries
+                .iter()
+                .enumerate()
+                .map(
+                    |(offset, (file_id, set_name, set_title, emoji, description))| StickerEntry {
+                        file_id: FileId((*file_id).to_owned()),
+                        set_name: (*set_name).to_owned(),
+                        set_title: (*set_title).to_owned(),
+                        emoji: (*emoji).to_owned(),
+                        index: offset as u32 + 1,
+                        description: (*description).to_owned(),
+                    },
+                )
+                .collect(),
+            sets: 1,
+        }
+    }
+}
+
+impl ToolRegistry {
+    /// Test-only injection: replaces a same-name spec in place, appends a new one.
+    pub(crate) fn with(mut self, spec: ToolSpec) -> Self {
+        match self
+            .specs
+            .iter()
+            .position(|existing| existing.name == spec.name)
+        {
+            Some(index) => self.specs[index] = spec,
+            None => self.specs.push(spec),
+        }
+        self
+    }
+
+    pub(crate) fn payload(&self, owner: bool) -> Option<Value> {
+        self.payload_for(owner, true)
+    }
+
+    pub(crate) fn payload_for(&self, owner: bool, feature_tools: bool) -> Option<Value> {
+        self.payload_for_mode(owner, feature_tools, false, false, false)
+    }
+}
+
+impl ChatConfig {
+    pub(crate) fn with_tools(mut self, tools: ToolRegistry) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    pub(crate) fn with_research_cooldown(mut self, cooldown: Duration) -> Self {
+        self.research_cooldown = cooldown;
+        self
+    }
+}
+
+pub(crate) fn empty_parameters() -> Value {
+    serde_json::json!({"type": "object", "properties": {}})
+}
+
+pub(crate) async fn test_pool() -> (tempfile::TempDir, SqlitePool) {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = open_database(&format!(
+        "sqlite://{}",
+        dir.path().join("state.db").display()
+    ))
+    .await
+    .unwrap();
+    (dir, pool)
+}
+
+pub(crate) fn write_outbox(root: &Path, name: &str, value: Value) {
+    write_json(root.join("outbox"), name, value);
+}
+
+pub(crate) fn write_inbox(root: &Path, name: &str, value: Value) {
+    write_json(root.join("inbox"), name, value);
+}
+
+fn write_json(dir: PathBuf, name: &str, value: Value) {
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(name), value.to_string()).unwrap();
+}
+
+pub(crate) fn tool_response(name: &str, arguments: Value) -> String {
+    serde_json::json!({"choices": [{"message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{"id": "call_1", "type": "function", "function": {
+            "name": name,
+            "arguments": arguments.to_string(),
+        }}],
+    }}]})
+    .to_string()
+}
+
+pub(crate) fn reply_response(text: &str) -> String {
+    serde_json::json!({"choices": [{"message": {"role": "assistant", "content": text}}]})
+        .to_string()
+}
+
+pub(crate) fn tool_contents(request: &str) -> Vec<String> {
+    let body = body_of(request);
+    let Some(messages) = body["messages"].as_array() else {
+        return Vec::new();
+    };
+    messages
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["content"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Production takes one `ChatTurn`; these let cases spell it out positionally
+/// without pushing any function past the arity limit.
+macro_rules! chat_reply {
+    ($chat:expr, $pool:expr, $stickers:expr, $catalog:expr, $chat_id:expr, $user_id:expr, $name:expr, $message_id:expr, $owner:expr, $prompt:expr, $image:expr $(,)?) => {
+        crate::chat_reply_with_proposal(
+            $chat,
+            $pool,
+            $stickers,
+            $catalog,
+            &crate::ChatTurn {
+                chat_id: $chat_id,
+                user_id: $user_id,
+                sender_name: $name,
+                message_id: $message_id,
+                owner: $owner,
+                prompt: $prompt,
+                image: $image,
+            },
+            None,
+        )
+    };
+}
+
+macro_rules! chat_reply_with_proposal {
+    ($chat:expr, $pool:expr, $stickers:expr, $catalog:expr, $chat_id:expr, $user_id:expr, $name:expr, $message_id:expr, $owner:expr, $prompt:expr, $image:expr, $proposal:expr $(,)?) => {
+        crate::chat_reply_with_proposal(
+            $chat,
+            $pool,
+            $stickers,
+            $catalog,
+            &crate::ChatTurn {
+                chat_id: $chat_id,
+                user_id: $user_id,
+                sender_name: $name,
+                message_id: $message_id,
+                owner: $owner,
+                prompt: $prompt,
+                image: $image,
+            },
+            $proposal,
+        )
+    };
+}
+
+pub(crate) use chat_reply;
+pub(crate) use chat_reply_with_proposal;

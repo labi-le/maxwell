@@ -66,24 +66,71 @@ def get_secret():
     raise RuntimeError("Chrome Safe Storage key unavailable")
 
 
-def decrypt(encrypted, host, key, version):
+BLOCK = 16
+CBC_IV = b" " * BLOCK
+
+
+def pkcs7_unpad(plaintext):
+    """Strip PKCS#7 padding, or return None when it is malformed."""
+    if not plaintext:
+        return None
+    padding = plaintext[-1]
+    if not 1 <= padding <= BLOCK:
+        return None
+    if plaintext[-padding:] != bytes([padding]) * padding:
+        return None
+    return plaintext[:-padding]
+
+
+def ciphertext_of(encrypted):
     if not (encrypted.startswith(b"v10") or encrypted.startswith(b"v11")):
         return None
     ciphertext = encrypted[3:]
-    if len(ciphertext) % 16:
+    if not ciphertext or len(ciphertext) % BLOCK:
         return None
-    result = subprocess.run(
-        ["openssl", "enc", "-d", "-aes-128-cbc", "-K", key.hex(),
-         "-iv", (b" " * 16).hex(), "-nopad"],
-        input=ciphertext, capture_output=True,
-    )
-    if result.returncode != 0 or not result.stdout:
+    return ciphertext
+
+
+class AesCbc:
+    """Decrypt many block-aligned ciphertexts with one openssl call.
+
+    CBC decryption resolves per block, so every ciphertext is prefixed with the
+    cookie IV and the whole stream is decrypted with a zero IV and -nopad: the
+    trailing len(ciphertext) bytes of each chunk then hold its plaintext,
+    because each chunk's predecessor is again its own IV.
+    """
+
+    def __init__(self, key):
+        self.key = key
+
+    def decrypt_many(self, ciphertexts):
+        """Return the padded plaintext per ciphertext, or None per failure."""
+        if not ciphertexts:
+            return []
+        payload = b"".join(CBC_IV + ciphertext for ciphertext in ciphertexts)
+        result = subprocess.run(
+            ["openssl", "enc", "-d", "-aes-128-cbc", "-K", self.key.hex(),
+             "-iv", bytes(BLOCK).hex(), "-nopad"],
+            input=payload, capture_output=True,
+        )
+        if result.returncode != 0 or len(result.stdout) != len(payload):
+            return [None] * len(ciphertexts)
+        plaintexts = []
+        offset = 0
+        for ciphertext in ciphertexts:
+            start = offset + BLOCK
+            plaintexts.append(result.stdout[start:start + len(ciphertext)])
+            offset = start + len(ciphertext)
+        return plaintexts
+
+
+def unwrap(plaintext, host, version):
+    """Turn block plaintext into a cookie value, honouring the host hash."""
+    if plaintext is None:
         return None
-    plaintext = result.stdout
-    padding = plaintext[-1]
-    if not (1 <= padding <= 16 and plaintext.endswith(bytes([padding]) * padding)):
+    plaintext = pkcs7_unpad(plaintext)
+    if plaintext is None:
         return None
-    plaintext = plaintext[:-padding]
     host_hash = hashlib.sha256(host.encode()).digest()
     if plaintext.startswith(host_hash):
         plaintext = plaintext[32:]
@@ -93,6 +140,13 @@ def decrypt(encrypted, host, key, version):
         return plaintext.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def decrypt(encrypted, host, key, version):
+    ciphertext = ciphertext_of(encrypted)
+    if ciphertext is None:
+        return None
+    return unwrap(AesCbc(key).decrypt_many([ciphertext])[0], host, version)
 
 
 def main():
@@ -115,6 +169,8 @@ def main():
     output = ["# Netscape HTTP Cookie File\n"]
     counts = {}
     skipped = 0
+    candidates = []
+    pending = []
     for host, name, encrypted, plain, path, expires, secure, http_only, persistent in rows:
         domain = host.lower().lstrip(".")
         if (not domain or host.startswith("..") or not safe_field(host) or not safe_field(name)
@@ -123,11 +179,30 @@ def main():
                 or not any(domain == suffix or domain.endswith("." + suffix)
                            for suffix in PLATFORM_DOMAINS)):
             continue
-        value = plain if plain else None
-        if value is None:
-            value = decrypt(encrypted, host, key, version)
-        if value is None:
-            value = decrypt(encrypted, host, peanuts, version)
+        candidates.append((domain, host, name, plain, path, expires,
+                           secure, http_only, persistent))
+        ciphertext = None if plain else ciphertext_of(encrypted)
+        if ciphertext is not None:
+            pending.append((len(candidates) - 1, ciphertext))
+    values = {}
+    if pending:
+        retry = []
+        for (index, ciphertext), plaintext in zip(
+                pending, AesCbc(key).decrypt_many([c for _, c in pending])):
+            value = unwrap(plaintext, candidates[index][1], version)
+            if value is None:
+                retry.append((index, ciphertext))
+            else:
+                values[index] = value
+        if retry:
+            for (index, _), plaintext in zip(
+                    retry, AesCbc(peanuts).decrypt_many([c for _, c in retry])):
+                value = unwrap(plaintext, candidates[index][1], version)
+                if value is not None:
+                    values[index] = value
+    for index, (domain, host, name, plain, path, expires,
+                secure, http_only, persistent) in enumerate(candidates):
+        value = plain if plain else values.get(index)
         if value is None or not safe_field(value):
             skipped += 1
             continue

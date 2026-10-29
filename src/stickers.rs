@@ -250,26 +250,11 @@ pub(crate) fn sticker_rule(text: &str) -> Option<&'static str> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct StickerReplies(HashMap<&'static str, FileId>);
+pub(crate) struct StickerReplies(pub(crate) HashMap<&'static str, FileId>);
 
 impl StickerReplies {
     pub(crate) fn file_id(&self, unique_id: &str) -> Option<&FileId> {
         self.0.get(unique_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_tests() -> Self {
-        Self(
-            RULES
-                .iter()
-                .map(|rule| {
-                    (
-                        rule.unique_id,
-                        FileId(format!("sticker-{}", rule.unique_id)),
-                    )
-                })
-                .collect(),
-        )
     }
 }
 
@@ -374,7 +359,7 @@ impl StickerCatalog {
                 scored.push((score, entry));
             }
         }
-        scored.sort_by(|left, right| right.0.cmp(&left.0));
+        scored.sort_by_key(|left| std::cmp::Reverse(left.0));
         scored
             .into_iter()
             .take(limit)
@@ -409,27 +394,6 @@ impl StickerCatalog {
         unix_nanos().hash(&mut hasher);
         let index = (hasher.finish() as usize) % entries.len();
         Some(entries[index].file_id.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_tests(entries: &[(&str, &str, &str, &str, &str)]) -> Self {
-        Self {
-            entries: entries
-                .iter()
-                .enumerate()
-                .map(
-                    |(offset, (file_id, set_name, set_title, emoji, description))| StickerEntry {
-                        file_id: FileId((*file_id).to_owned()),
-                        set_name: (*set_name).to_owned(),
-                        set_title: (*set_title).to_owned(),
-                        emoji: (*emoji).to_owned(),
-                        index: offset as u32 + 1,
-                        description: (*description).to_owned(),
-                    },
-                )
-                .collect(),
-            sets: 1,
-        }
     }
 }
 

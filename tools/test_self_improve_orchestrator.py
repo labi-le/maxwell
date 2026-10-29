@@ -35,6 +35,7 @@ class ApprovalTests(unittest.TestCase):
             module.deploy = lambda *args: self.fail("deploy must not run before implementation")
             module.process_approvals()
             self.assertEqual(called, {"task": "plan-1", "spec": "spec", "base": "base"})
+            self.assertFalse((pathlib.Path(tmp) / "queue" / "plan-approvals" / "plan-1.json").exists())
 
     def test_deploy_marker_does_not_approve_a_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +65,7 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(called, {})
             value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-3.json").read_text())
             self.assertEqual(value["status"], "rejected")
+            self.assertFalse((pathlib.Path(tmp) / "queue" / "rejections" / "plan-3.json").exists())
 
     def test_plan_task_uses_read_only_planner_and_reviewer(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -230,6 +232,7 @@ class ApprovalTests(unittest.TestCase):
                 task=task["id"], base=base, branch=branch, paths=paths)
             module.process_approvals()
             self.assertEqual(called, {"task": "task-1", "base": "base", "branch": "improve/task-1", "paths": ["README.md"]})
+            self.assertFalse((pathlib.Path(tmp) / "queue" / "approvals" / "task-1.json").exists())
 
     def test_rejection_does_not_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -261,6 +264,175 @@ class ApprovalTests(unittest.TestCase):
             module.status({"id": "plan-1", "priority": 7}, "planned", "ok")
             stored = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-1.json").read_text())
             self.assertEqual(stored["priority"], 7)
+
+    def test_status_preserves_task_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            module.status(
+                {
+                    "id": "plan-1",
+                    "created_at": 1700000000,
+                    "requested_by": 42,
+                    "parent": "plan-0",
+                    "feedback": "сделай иначе",
+                    "previous_spec": "old spec",
+                    "previous_review": "old review",
+                },
+                "planned", "ok",
+            )
+            stored = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-1.json").read_text())
+            self.assertEqual(stored["created_at"], 1700000000)
+            self.assertGreaterEqual(stored["updated_at"], stored["created_at"])
+            self.assertEqual(stored["requested_by"], 42)
+            self.assertEqual(stored["parent"], "plan-0")
+            self.assertEqual(stored["feedback"], "сделай иначе")
+            self.assertEqual(stored["previous_spec"], "old spec")
+            self.assertEqual(stored["previous_review"], "old review")
+
+    def test_plan_task_removes_the_worktree_when_the_planner_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "plan-fail"
+            worktree.mkdir(parents=True)
+            module.base_commit = lambda task_id: "base"
+            module.make_worktree = lambda task_id, base: worktree
+            module.read_llm_key = lambda: "secret"
+            module.run_agent = lambda *args: (False, "planner crashed")
+            calls = []
+            module.run = lambda args, **kwargs: calls.append(args) or type(
+                "P", (), {"returncode": 0, "stdout": ""})()
+            module.plan_task({"id": "plan-fail", "goal": "g", "chat_id": 10})
+            self.assertFalse(worktree.exists())
+            self.assertTrue(any("worktree" in call and "remove" in call for call in calls))
+
+    def test_plan_task_removes_the_worktree_when_the_planner_leaks_the_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "plan-leak"
+            worktree.mkdir(parents=True)
+            module.base_commit = lambda task_id: "base"
+            module.make_worktree = lambda task_id, base: worktree
+            module.read_llm_key = lambda: "secret"
+            module.run_agent = lambda *args: (True, "spec contains secret")
+            module.run = lambda *args, **kwargs: type("P", (), {"returncode": 0, "stdout": ""})()
+            module.plan_task({"id": "plan-leak", "goal": "g", "chat_id": 10})
+            self.assertFalse(worktree.exists())
+            value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-leak.json").read_text())
+            self.assertEqual(value["status"], "failed")
+
+    def test_forbidden_paths_block_container_definitions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            self.assertIsNotNone(module.check_diff(["Dockerfile"]))
+            self.assertIsNotNone(module.check_diff(["compose.yaml"]))
+            self.assertIsNotNone(module.check_diff(["Cargo.lock"]))
+            self.assertIsNotNone(module.check_diff(["cookie_refresh/timer.py"]))
+            self.assertIsNone(module.check_diff(["src/queue.rs"]))
+
+    def test_invalid_plan_approval_marker_is_ignored_and_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            module.status(
+                {"id": "plan-5", "chat_id": 10, "goal": "x"},
+                "planned", "plan", stage="plan", base="base", spec="s", review="r",
+            )
+            marker = pathlib.Path(tmp) / "queue" / "plan-approvals" / "plan-5.json"
+            marker.write_text(json.dumps({"id": "plan-5", "requested_by": 1}))
+            module.implement_planned = lambda value: self.fail("invalid marker must not start work")
+            module.process_approvals()
+            self.assertFalse(marker.exists())
+            value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-5.json").read_text())
+            self.assertEqual(value["status"], "planned")
+
+    def test_invalid_deploy_approval_marker_is_ignored_and_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "task-3"
+            worktree.mkdir(parents=True)
+            module.status({"id": "task-3"}, "proposed", "ok", files=["README.md"],
+                          base="base", branch="improve/task-3", worktree=str(worktree))
+            marker = pathlib.Path(tmp) / "queue" / "approvals" / "task-3.json"
+            marker.write_text(json.dumps({"id": "task-3", "requested_by": 1}))
+            module.deploy = lambda *args: self.fail("invalid marker must not deploy")
+            module.process_approvals()
+            self.assertFalse(marker.exists())
+            value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "task-3.json").read_text())
+            self.assertEqual(value["status"], "proposed")
+
+    def test_implement_removes_the_worktree_and_branch_when_the_implementer_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "task-4"
+            worktree.mkdir(parents=True)
+            module.read_llm_key = lambda: ""
+            module.run_implementer = lambda task, wt: (False, "boom")
+            calls = []
+            module.run = lambda args, **kwargs: calls.append(args) or type(
+                "P", (), {"returncode": 0, "stdout": ""})()
+            module.implement({"id": "task-4", "goal": "g"}, "base", worktree)
+            self.assertFalse(worktree.exists())
+            self.assertIn(["git", "-C", str(module.REPO), "branch", "-D", "improve/task-4"], calls)
+            value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "task-4.json").read_text())
+            self.assertEqual(value["status"], "failed")
+
+    def test_rejection_preserves_task_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            root = pathlib.Path(tmp) / "queue"
+            module.status(
+                {"id": "plan-6", "chat_id": 10, "goal": "план", "requested_by": 42,
+                 "created_at": 1700000000, "parent": "plan-0"},
+                "planned", "plan", stage="plan", base="base", spec="s", review="r",
+            )
+            (root / "rejections" / "plan-6.json").write_text("reject")
+            module.process_approvals()
+            value = json.loads((root / "outbox" / "plan-6.json").read_text())
+            self.assertEqual(value["status"], "rejected")
+            self.assertEqual(value["goal"], "план")
+            self.assertEqual(value["chat_id"], 10)
+            self.assertEqual(value["created_at"], 1700000000)
+            self.assertEqual(value["requested_by"], 42)
+            self.assertEqual(value["parent"], "plan-0")
+
+    def test_deploy_rejection_preserves_task_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            root = pathlib.Path(tmp) / "queue"
+            module.status(
+                {"id": "plan-7", "chat_id": 11, "goal": "реализация", "requested_by": 42,
+                 "created_at": 1700000001},
+                "proposed", "ready", base="base", branch="improve/plan-7",
+            )
+            (root / "rejections" / "plan-7.json").write_text("reject")
+            module.deploy = lambda *args: self.fail("deploy must not run")
+            module.process_approvals()
+            value = json.loads((root / "outbox" / "plan-7.json").read_text())
+            self.assertEqual(value["status"], "rejected")
+            self.assertEqual(value["goal"], "реализация")
+            self.assertEqual(value["chat_id"], 11)
+            self.assertEqual(value["created_at"], 1700000001)
+            self.assertEqual(value["requested_by"], 42)
+
+    def test_implement_cleans_up_when_a_git_command_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "task-8"
+            worktree.mkdir(parents=True)
+            module.read_llm_key = lambda: ""
+            module.run_implementer = lambda task, wt: (True, "done")
+            cleaned = []
+            module.cleanup_worktree = lambda task_id, wt, delete_branch=False: cleaned.append(
+                (task_id, wt, delete_branch))
+
+            def boom(_worktree):
+                raise RuntimeError("git status failed")
+
+            module.changed_paths = boom
+            with self.assertRaises(RuntimeError):
+                module.implement({"id": "task-8", "goal": "g"}, "base", worktree)
+            self.assertEqual(cleaned, [("task-8", worktree, True)])
+            value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "task-8.json").read_text())
+            self.assertEqual(value["status"], "running")
 
 if __name__ == "__main__":
     unittest.main()

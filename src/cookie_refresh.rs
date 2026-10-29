@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn cookie_source(url: &Url) -> &'static str {
@@ -135,7 +134,7 @@ pub(crate) async fn refresh_after_auth_failure(
     if cfg.cookies_file.is_none()
         || !is_cookie_auth_detail(failure.diagnostic.detail)
         || time::Instant::now() >= deadline
-        || !retryable_output(dir, cfg.max_media_bytes)
+        || !retryable_output(dir, cfg.max_media_bytes).await
     {
         return false;
     }

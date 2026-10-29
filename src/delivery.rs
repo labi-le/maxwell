@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 #[derive(Debug)]
@@ -304,7 +303,7 @@ pub(crate) async fn deliver_items(
                     // Telegram shows per-item album captions, so a shared attribution block
                     // would repeat once per image. Keep each distinct caption, but attach an
                     // already-delivered identical caption only to its first album item.
-                    let duplicate = seen_captions.iter().any(|seen| *seen == caption);
+                    let duplicate = seen_captions.contains(&caption);
                     if !caption.is_empty() && !duplicate {
                         seen_captions.push(caption.clone());
                     }

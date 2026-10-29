@@ -1,5 +1,5 @@
 mod prelude;
-use prelude::*;
+pub(crate) use prelude::*;
 
 mod media_cache;
 mod user_errors;
@@ -10,11 +10,28 @@ pub(crate) use media_cache::{
 
 mod chat;
 pub(crate) use chat::*;
+mod chat_client;
+pub(crate) use chat_client::*;
+mod chat_media;
+pub(crate) use chat_media::*;
+mod chat_status;
+pub(crate) use chat_status::*;
+mod chat_style;
+pub(crate) use chat_style::*;
+mod chat_tools;
+pub(crate) use chat_tools::*;
+mod research;
+pub(crate) use research::*;
+mod search;
+pub(crate) use search::*;
 mod tool_registry;
 pub(crate) use tool_registry::*;
 mod memory;
 pub(crate) use memory::*;
 mod code_inspect;
+mod improve_commands;
+mod improve_store;
+mod improve_views;
 mod self_improve;
 mod settings;
 pub(crate) use settings::*;
@@ -161,7 +178,11 @@ async fn callback_endpoint(
 #[cfg(test)]
 mod caption_test;
 #[cfg(test)]
+mod chat_status_test;
+#[cfg(test)]
 mod chat_test;
+#[cfg(test)]
+mod code_inspect_test;
 #[cfg(test)]
 mod cookie_refresh_test;
 #[cfg(test)]
@@ -193,7 +214,13 @@ mod media_cache_test;
 #[cfg(test)]
 mod media_test;
 #[cfg(test)]
+mod memory_test;
+#[cfg(test)]
 mod process_test;
+#[cfg(test)]
+mod read_url_test;
+#[cfg(test)]
+mod research_test;
 #[cfg(test)]
 mod self_improve_test;
 #[cfg(test)]

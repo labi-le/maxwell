@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 pub(crate) struct DownloadResult {
@@ -10,17 +9,6 @@ pub(crate) struct DownloadResult {
     pub(crate) twitter_photos_failed: bool,
     pub(crate) diagnostic: Option<FailureDiagnostic>,
     pub(crate) events: Vec<FailureDiagnostic>,
-}
-
-#[cfg(test)]
-pub(crate) async fn download(
-    url: &Url,
-    cfg: &Settings,
-    dir: &Path,
-) -> Result<DownloadResult, String> {
-    download_with_timeout(url, cfg, dir, DOWNLOAD_TIMEOUT)
-        .await
-        .map_err(|failure| failure.reason)
 }
 
 pub(crate) async fn tiktok_metadata_with_refresh(
@@ -126,20 +114,20 @@ pub(crate) async fn download_with_timeout(
     let deadline = time::Instant::now() + duration;
     let mut refresh_events = Vec::new();
     if let Some(path) = &cfg.cookies_file {
-        if validate_cookie_jar(path).is_err() {
-            if !request_cookie_refresh(cfg, cookie_source(url), deadline, &mut refresh_events).await
-                || validate_cookie_jar(path).is_err()
-            {
-                let mut failure = DownloadFailure::new(
-                    "Не удалось подготовить cookies".into(),
-                    "preflight",
-                    "Cookies unavailable",
-                );
-                failure.events = refresh_events;
-                return Err(failure);
-            }
+        if validate_cookie_jar_async(path).await.is_err()
+            && (!request_cookie_refresh(cfg, cookie_source(url), deadline, &mut refresh_events)
+                .await
+                || validate_cookie_jar_async(path).await.is_err())
+        {
+            let mut failure = DownloadFailure::new(
+                "Не удалось подготовить cookies".into(),
+                "preflight",
+                "Cookies unavailable",
+            );
+            failure.events = refresh_events;
+            return Err(failure);
         }
-        if process_cookies(Some(path), dir).is_err() {
+        if process_cookies_async(Some(path), dir).await.is_err() {
             let mut failure = DownloadFailure::new(
                 "Не удалось подготовить временный каталог".into(),
                 "preflight",
@@ -194,7 +182,7 @@ pub(crate) async fn download_with_timeout(
                 if error.auth
                     && cfg.cookies_file.is_some()
                     && time::Instant::now() < deadline
-                    && (retryable_output(dir, cfg.max_media_bytes) || video_has_files)
+                    && (retryable_output(dir, cfg.max_media_bytes).await || video_has_files)
                 {
                     let mut refresh_events = Vec::new();
                     if request_cookie_refresh(cfg, "twitter", deadline, &mut refresh_events).await {
@@ -253,7 +241,6 @@ pub(crate) async fn download_with_timeout(
     } else {
         (None, None)
     };
-    let manifest = dir.join("completed-paths.txt");
     let mut result = if metadata.as_ref().is_none_or(|data| data.has_video) {
         let video = match video_result {
             Some(video) => video,
@@ -326,7 +313,6 @@ pub(crate) async fn download_with_timeout(
             &metadata.alternates,
             cfg,
             dir,
-            &manifest,
             max_images,
             &mut result.selection,
             deadline,
@@ -363,27 +349,28 @@ pub(crate) async fn download_with_timeout(
     Ok(result)
 }
 
-pub(crate) fn retryable_output(dir: &Path, max_bytes: u64) -> bool {
+pub(crate) async fn retryable_output(dir: &Path, max_bytes: u64) -> bool {
     // A manifest entry may be finished but unsendable; never discard it.
     let manifest = dir.join("completed-paths.txt");
-    match fs::read_to_string(&manifest) {
+    match tokio::fs::read_to_string(&manifest).await {
         Ok(paths) if !paths.trim().is_empty() => return false,
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return false,
         _ => {}
     }
-    matches!(disk_usage(dir), Ok(usage) if usage <= max_bytes.saturating_mul(MAX_FILES as u64))
+    let limit = max_bytes.saturating_mul(MAX_FILES as u64);
+    matches!(disk_usage_async(dir).await, Ok(usage) if usage <= limit)
 }
 
-pub(crate) fn clear_failed_attempt(dir: &Path) -> Result<(), String> {
+pub(crate) async fn clear_failed_attempt(dir: &Path) -> Result<(), String> {
+    let error = || "Ошибка очистки загрузки".to_string();
     // The previous yt-dlp process has exited; only incomplete outputs remain.
-    for entry in fs::read_dir(dir).map_err(|_| "Ошибка очистки загрузки".to_string())?
-    {
-        let entry = entry.map_err(|_| "Ошибка очистки загрузки".to_string())?;
-        let kind = entry
-            .file_type()
-            .map_err(|_| "Ошибка очистки загрузки".to_string())?;
+    let mut entries = tokio::fs::read_dir(dir).await.map_err(|_| error())?;
+    while let Some(entry) = entries.next_entry().await.map_err(|_| error())? {
+        let kind = entry.file_type().await.map_err(|_| error())?;
         if kind.is_file() || kind.is_symlink() {
-            fs::remove_file(entry.path()).map_err(|_| "Ошибка очистки загрузки".to_string())?;
+            tokio::fs::remove_file(entry.path())
+                .await
+                .map_err(|_| error())?;
         }
     }
     Ok(())

@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::test_support::*;
 use crate::*;
 
@@ -101,24 +100,6 @@ impl Drop for FeatureApi {
     }
 }
 
-pub(crate) fn feature_find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
-    bytes.windows(needle.len()).position(|part| part == needle)
-}
-
-pub(crate) async fn feature_read_more(stream: &mut tokio::net::TcpStream, bytes: &mut Vec<u8>) {
-    let mut chunk = [0; 4096];
-    let count = stream
-        .read(&mut chunk)
-        .await
-        .expect("reading local Bot API request");
-    assert_ne!(count, 0, "incomplete local Bot API request");
-    bytes.extend_from_slice(&chunk[..count]);
-    assert!(
-        bytes.len() <= 8 * 1024 * 1024,
-        "fixture request exceeded bounded body size"
-    );
-}
-
 pub(crate) fn feature_field(value: &[u8]) -> Value {
     serde_json::from_slice(value).unwrap_or_else(|_| {
         Value::String(String::from_utf8(value.to_vec()).expect("UTF-8 Bot API field"))
@@ -126,14 +107,7 @@ pub(crate) fn feature_field(value: &[u8]) -> Value {
 }
 
 pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> FeatureRequest {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        if let Some(end) = feature_find(&bytes, b"\r\n\r\n") {
-            break end + 4;
-        }
-        feature_read_more(stream, &mut bytes).await;
-    };
-    let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
+    let (headers, body) = read_bot_api_request(stream).await;
     let path = headers
         .split_whitespace()
         .nth(1)
@@ -144,54 +118,6 @@ pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> 
             key.eq_ignore_ascii_case(name).then(|| value.trim())
         })
     };
-    let mut body = Vec::new();
-    if header("transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
-        let mut cursor = header_end;
-        loop {
-            let line_end = loop {
-                if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") {
-                    break cursor + end;
-                }
-                feature_read_more(stream, &mut bytes).await;
-            };
-            let size = std::str::from_utf8(&bytes[cursor..line_end])
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap()
-                .trim();
-            let size = usize::from_str_radix(size, 16).expect("valid HTTP chunk size");
-            cursor = line_end + 2;
-            if size == 0 {
-                // Consume optional trailers rather than guessing a raw-body terminator.
-                loop {
-                    let end = loop {
-                        if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") {
-                            break cursor + end;
-                        }
-                        feature_read_more(stream, &mut bytes).await;
-                    };
-                    if end == cursor {
-                        break;
-                    }
-                    cursor = end + 2;
-                }
-                break;
-            }
-            while bytes.len() < cursor + size + 2 {
-                feature_read_more(stream, &mut bytes).await;
-            }
-            body.extend_from_slice(&bytes[cursor..cursor + size]);
-            assert_eq!(&bytes[cursor + size..cursor + size + 2], b"\r\n");
-            cursor += size + 2;
-        }
-    } else {
-        let length: usize = header("content-length").unwrap_or("0").parse().unwrap();
-        while bytes.len() < header_end + length {
-            feature_read_more(stream, &mut bytes).await;
-        }
-        body.extend_from_slice(&bytes[header_end..header_end + length]);
-    }
     let content_type = header("content-type").unwrap_or("");
     let mut fields = serde_json::json!({});
     let mut uploads = Vec::new();
@@ -203,14 +129,14 @@ pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> 
             .trim_matches('"');
         let delimiter = format!("--{boundary}");
         let next_delimiter = format!("\r\n{delimiter}");
-        let mut cursor = feature_find(&body, delimiter.as_bytes()).unwrap() + delimiter.len();
+        let mut cursor = test_find(&body, delimiter.as_bytes()).unwrap() + delimiter.len();
         loop {
             if body[cursor..].starts_with(b"--") {
                 break;
             }
             assert!(body[cursor..].starts_with(b"\r\n"));
             cursor += 2;
-            let end = cursor + feature_find(&body[cursor..], b"\r\n\r\n").unwrap();
+            let end = cursor + test_find(&body[cursor..], b"\r\n\r\n").unwrap();
             let part_headers = std::str::from_utf8(&body[cursor..end]).unwrap();
             let disposition = part_headers
                 .lines()
@@ -227,7 +153,7 @@ pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> 
             };
             let name = attribute("name").expect("multipart field name");
             cursor = end + 4;
-            let end = cursor + feature_find(&body[cursor..], next_delimiter.as_bytes()).unwrap();
+            let end = cursor + test_find(&body[cursor..], next_delimiter.as_bytes()).unwrap();
             let value = &body[cursor..end];
             if attribute("filename").is_some() {
                 uploads.push((name.to_owned(), value.to_vec()));

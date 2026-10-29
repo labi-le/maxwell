@@ -1,4 +1,3 @@
-use crate::prelude::*;
 use crate::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,4 +116,27 @@ pub(crate) fn disk_usage(dir: &Path) -> std::io::Result<u64> {
         }
     }
     Ok(size)
+}
+
+async fn spawn_blocking_scan<T: Send + 'static>(
+    task: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
+    tokio::task::spawn_blocking(task)
+        .await
+        .unwrap_or_else(|_| Err(std::io::Error::other("media scan task failed")))
+}
+
+pub(crate) async fn select_media_async(
+    dir: &Path,
+    manifest: &Path,
+    max_bytes: u64,
+) -> std::io::Result<Selection> {
+    let dir = dir.to_path_buf();
+    let manifest = manifest.to_path_buf();
+    spawn_blocking_scan(move || select_media(&dir, &manifest, max_bytes)).await
+}
+
+pub(crate) async fn disk_usage_async(dir: &Path) -> std::io::Result<u64> {
+    let dir = dir.to_path_buf();
+    spawn_blocking_scan(move || disk_usage(&dir)).await
 }

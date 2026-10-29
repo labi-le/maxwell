@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -203,6 +204,15 @@ def _drain(stream, limit):
     return bytes(data)
 
 
+def _close(stream):
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except OSError:
+        pass
+
+
 def run_exporter(target, config, exporter_source):
     """Run the exporter on one SSH target without ever logging its output."""
     command = [
@@ -225,21 +235,25 @@ def run_exporter(target, config, exporter_source):
         reader.daemon = True
         reader.start()
     try:
-        process.stdin.write(exporter_source)
-    except (BrokenPipeError, OSError):
-        pass
-    finally:
         try:
-            process.stdin.close()
-        except OSError:
+            process.stdin.write(exporter_source)
+        except (BrokenPipeError, OSError):
             pass
-    try:
-        returncode = process.wait(timeout=config.ssh_timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        returncode = process.wait()
-    for reader in readers:
-        reader.join(timeout=2)
+        finally:
+            _close(process.stdin)
+        try:
+            returncode = process.wait(timeout=config.ssh_timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            try:
+                returncode = process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                returncode = -signal.SIGKILL
+        for reader in readers:
+            reader.join(timeout=2)
+    finally:
+        _close(process.stdout)
+        _close(process.stderr)
     return ExportResult(returncode, output[0] if output else b"",
                         errors[0] if errors else b"")
 

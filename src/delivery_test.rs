@@ -1,5 +1,4 @@
 use crate::feature_support::*;
-use crate::prelude::*;
 use crate::test_support::*;
 use crate::*;
 
@@ -218,14 +217,22 @@ printf '%s\n' "$dir/finished.{extension}" > "$manifest"
 async fn metadata_caption_instagram_description_precedes_sender_code_and_preserves_query() {
     let root = tempfile::tempdir().unwrap();
     let url = "https://instagram.com/p/DdwhVt0RuIq/?stkn=one&next=two";
-    let (calls, probes) = metadata_caption_recorded_delivery(root.path(), url,
-            &serde_json::json!({
+    let (calls, probes) = metadata_caption_recorded_delivery(
+        root.path(),
+        url,
+        CaptionDelivery {
+            metadata: serde_json::json!({
                 "description": "Какой красивый котик & <милый>",
                 "formats": [{"url": "https://example.org/real.mp4"}],
                 "thumbnails": []
-            }), None, None, None,
-            serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
-            true).await;
+            }),
+            downloaded: (None, None),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
+            video_ok: true,
+        },
+    )
+    .await;
     assert_eq!(probes, 1, "Instagram should fetch post metadata only once");
     assert_eq!(metadata_caption_from_video(&calls),
             "Какой красивый котик &amp; &lt;милый&gt;\n<code>От Kitty</code>\n<a href=\"https://instagram.com/p/DdwhVt0RuIq/?stkn=one&amp;next=two\">Ссылка</a>");
@@ -250,10 +257,18 @@ async fn metadata_caption_instagram_description_precedes_sender_code_and_preserv
 #[tokio::test]
 async fn metadata_caption_youtube_uses_download_description_when_probe_has_no_metadata() {
     let root = tempfile::tempdir().unwrap();
-    let (calls, probes) = metadata_caption_recorded_delivery(root.path(), "https://youtu.be/abc",
-            &serde_json::json!({"formats": []}), None, Some("Видео & <кот>"), None,
-            serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
-            true).await;
+    let (calls, probes) = metadata_caption_recorded_delivery(
+        root.path(),
+        "https://youtu.be/abc",
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": []}),
+            downloaded: (None, Some("Видео & <кот>")),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
+            video_ok: true,
+        },
+    )
+    .await;
     assert_eq!(
         probes, 1,
         "YouTube format probe must not be repeated for the description"
@@ -269,12 +284,13 @@ async fn metadata_caption_keeps_post_title_before_description() {
     let (calls, _) = metadata_caption_recorded_delivery(
         root.path(),
         "https://youtu.be/abc",
-        &serde_json::json!({"formats": []}),
-        Some("Заголовок & <ролик>"),
-        Some("Описание"),
-        None,
-        serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty"}),
-        true,
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": []}),
+            downloaded: (Some("Заголовок & <ролик>"), Some("Описание")),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty"}),
+            video_ok: true,
+        },
     )
     .await;
     assert_eq!(metadata_caption_from_video(&calls),
@@ -288,12 +304,13 @@ async fn metadata_caption_ignores_synthesized_placeholder_title() {
     let (calls, _) = metadata_caption_recorded_delivery(
         root.path(),
         "https://youtu.be/abc",
-        &serde_json::json!({"formats": []}),
-        Some("Video by someone"),
-        Some("Описание"),
-        None,
-        serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty"}),
-        true,
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": []}),
+            downloaded: (Some("Video by someone"), Some("Описание")),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty"}),
+            video_ok: true,
+        },
     )
     .await;
     assert_eq!(
@@ -309,12 +326,13 @@ async fn metadata_caption_does_not_copy_the_sender_text() {
     let (calls, _) = metadata_caption_recorded_delivery(
         root.path(),
         "https://youtu.be/abc",
-        &serde_json::json!({"formats": []}),
-        Some("Заголовок"),
-        Some("Описание"),
-        Some("девочка зажигает\nсмотрите до конца https://youtu.be/abc"),
-        serde_json::json!({"id": 1, "is_bot": false, "first_name": "Вадик"}),
-        true,
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": []}),
+            downloaded: (Some("Заголовок"), Some("Описание")),
+            message_text: Some("девочка зажигает\nсмотрите до конца https://youtu.be/abc"),
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Вадик"}),
+            video_ok: true,
+        },
     )
     .await;
     assert_eq!(
@@ -331,13 +349,14 @@ async fn metadata_caption_without_description_starts_with_escaped_name_in_code()
         let (calls, _) = metadata_caption_recorded_delivery(
             root.path(),
             "https://instagram.com/p/abc/",
-            &serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
+            CaptionDelivery {
+                metadata: serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
                     "description": description}),
-            None,
-            None,
-            None,
-            serde_json::json!({"id": 1, "is_bot": false, "first_name": "Alice & <Bob>"}),
-            true,
+                downloaded: (None, None),
+                message_text: None,
+                sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Alice & <Bob>"}),
+                video_ok: true,
+            },
         )
         .await;
         assert_eq!(metadata_caption_from_video(&calls),
@@ -350,12 +369,19 @@ async fn metadata_caption_without_description_starts_with_escaped_name_in_code()
 async fn metadata_caption_long_html_and_emoji_remains_within_telegram_utf16_limit() {
     let root = tempfile::tempdir().unwrap();
     let description = "🐈 & <милый> ".repeat(180);
-    let (calls, _) = metadata_caption_recorded_delivery(root.path(),
-            "https://instagram.com/p/abc/",
-            &serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
-                "description": description}), None, None, None,
-            serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
-            true).await;
+    let (calls, _) = metadata_caption_recorded_delivery(
+        root.path(),
+        "https://instagram.com/p/abc/",
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
+                "description": description}),
+            downloaded: (None, None),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
+            video_ok: true,
+        },
+    )
+    .await;
     let caption = metadata_caption_from_video(&calls);
     let footer = "\n<code>От Kitty</code>\n<a href=\"https://instagram.com/p/abc/\">Ссылка</a>";
     let text = caption
@@ -377,12 +403,19 @@ async fn metadata_caption_long_html_and_emoji_remains_within_telegram_utf16_limi
 #[tokio::test]
 async fn metadata_caption_failed_video_upload_keeps_source_message() {
     let root = tempfile::tempdir().unwrap();
-    let (calls, _) = metadata_caption_recorded_delivery(root.path(),
-            "https://instagram.com/p/abc/",
-            &serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
-                "description": "Описание"}), None, None, None,
-            serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
-            false).await;
+    let (calls, _) = metadata_caption_recorded_delivery(
+        root.path(),
+        "https://instagram.com/p/abc/",
+        CaptionDelivery {
+            metadata: serde_json::json!({"formats": [{"url": "https://example.org/video.mp4"}],
+                "description": "Описание"}),
+            downloaded: (None, None),
+            message_text: None,
+            sender: serde_json::json!({"id": 1, "is_bot": false, "first_name": "Kitty", "username": "cat_sender"}),
+            video_ok: false,
+        },
+    )
+    .await;
     assert!(calls
         .iter()
         .any(|(path, _)| api_method_is(path, "sendVideo")));
