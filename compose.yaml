@@ -35,6 +35,7 @@ services:
       - ./docs:/var/lib/maksut/code/docs:ro
       - ./Cargo.toml:/var/lib/maksut/code/Cargo.toml:ro
       - ./README.md:/var/lib/maksut/code/README.md:ro
+      - ./AGENTS.md:/var/lib/maksut/code/AGENTS.md:ro
 
   cookie-refresh:
     build:
