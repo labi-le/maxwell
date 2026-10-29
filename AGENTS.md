@@ -33,6 +33,8 @@ These hold everywhere. A change that needs to break one of them needs a differen
 - **Every external URL and fetched body is untrusted.** Media URLs pass `allowed_url` (`src/links.rs`), CDN image URLs pass `image_cdn_url` and `pinned_client` (`src/images.rs`, `src/image_fetch.rs`), and `read_url` (`src/read_url.rs`) requires an exact URL match from the user's current prompt plus public-IPv4 DNS pinning, manual redirect validation (max 5), size caps, and HTML complexity bounds. Never enable `yt-dlp`'s generic extractor (`--ies default,-generic`).
 - **No silent degradation and no secret leaks.** Never send raw `yt-dlp`/`ffmpeg` stderr, API bodies, query strings, `.env`, or `cookies.txt` to Telegram or SQLite (`download_failures` records only static categories, host, and path without query). Every video sent as a video must have an audio stream verified by `ffprobe`.
 - **No `.unwrap()` / `.expect()` on fallible runtime paths** (network, I/O, user input, external JSON/HTML, subprocesses), and **never hold a `std::sync::Mutex` guard across an `.await`**.
+- **Strict separation of production code and tests.** Never place `#[cfg(test)] mod ...`, `#[test]`, `#[tokio::test]`, or `#[cfg(test)]` helper methods/functions inside production `src/*.rs` modules (or `unittest` cases inside production `tools/*.py` scripts). All unit and integration tests live in dedicated `src/*_test.rs` files (`tools/test_*.py`), and shared test builders/fixtures live in `src/test_support.rs`.
+- **Single responsibility and bounded module size.** Each file owns one cohesive concern and stays under ~500 lines. Never turn a file into a multi-domain god-module (such as mixing HTTP clients, search providers, tool dispatch, status formatting, and HTML scraping in one file). When adding a capability that crosses responsibilities or pushes a module past ~500 lines, split along clear responsibility seams instead of appending.
 - **Never weaken a test to make it pass.** A failing test found a real behavior change. A test that pinned only an incidental detail is deleted outright, not re-pinned to new text.
 
 ## Workflow: mandatory, not advisory
@@ -57,6 +59,10 @@ Why each of these rules exists, and what shipping without it cost, is in [`docs/
 - **Comments earn their place.** Write one only for what the code cannot say itself: the *why* (rationale, tradeoffs), non-obvious invariants, ordering/locking/concurrency rules, protocol/extractor quirks, or SSRF/security boundaries.
 - **Never restate the code.** Delete comments that only echo the name or signature or narrate the next line. Never leave `TODO`, `FIXME`, `XXX`, `HACK`, or commented-out code behind.
 - **A stale comment is worse than none.** Changing behavior means updating the comment or deleting it in the same change.
+- **Function signatures and async hygiene:**
+  - Keep function parameter lists small (`<= 7` parameters; use a request/options struct instead of positional boolean flags or `#[allow(clippy::too_many_arguments)]`).
+  - Never call blocking `std::fs` / `std::io` inside `async fn` on the Tokio runtime; use `tokio::fs` or `tokio::task::spawn_blocking`.
+  - Every in-memory `HashMap` or cache keyed by user, chat, IP, or task ID must have an explicit size cap or TTL eviction.
 - **Working agreements:**
   - Briefs to subagents name the exact `nix-shell --run ...` verification command, the files in scope, and the acceptance criteria.
   - Subagents do not run full builds mid-flight while sibling edits are in progress; run the smallest targeted test (`cargo test <filter>`), then run the full gate once when the tree is quiet.

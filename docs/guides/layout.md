@@ -4,7 +4,12 @@
 
 ## Rust binary (`src/`, crate `maksut`)
 
-Every module is declared in `src/main.rs` and shares imports through `src/prelude.rs`. Inline unit tests sit in sibling `src/*_test.rs` files wired at the bottom of `src/main.rs` (plus `src/test_support.rs` and `src/feature_support.rs`).
+Every module is declared in `src/main.rs` and shares imports through `src/prelude.rs`.
+
+**Architecture and file layout rules:**
+
+- **Zero test code in production modules.** Production `src/<module>.rs` files must contain only production types and functions: never `#[cfg(test)] mod tests`, `#[test]`, `#[tokio::test]`, or `#[cfg(test)]` helper constructors/wrappers. All tests sit in sibling `src/<module>_test.rs` files wired at the bottom of `src/main.rs`, and shared test fixtures/builders sit in `src/test_support.rs`. The same holds for Python (`tools/<name>.py` vs `tools/test_<name>.py`).
+- **One responsibility per file (`<= 500` lines target).** Do not append new subsystems to `src/chat.rs`, `src/self_improve.rs`, or `src/chat_test.rs`. Each concern (for example: search providers, multi-query research, LLM HTTP transport, reply styling, queue storage, status views) belongs in its own focused module and matching `*_test.rs` file.
 
 - `src/main.rs`: entrypoint, process-wide limits (`MAX_FILES`, `MAX_TIKTOK_PHOTOS`, `USER_DOWNLOAD_LIMIT`, `TELEGRAM_FILE_LIMIT`, `DEFAULT_MEDIA_LIMIT`, `DOWNLOAD_TIMEOUT`, `MAX_VIDEO_DURATION`, `TELEGRAM_REQUEST_TIMEOUT`, `COOKIE_REFRESH_TIMEOUT`, `YOUTUBE_PROBE_TIMEOUT`, `MAX_METADATA_BYTES`, `MP4_MUX_HEADROOM`, `MAX_TWITTER_JSON_BYTES`, `MAX_VIDEO_DIMENSION`, `MAX_VIDEO_PIXELS`), background task spawns (`load_sticker_catalog`, `memory_compactor`, `improvement_notifier`), and the `teloxide` dispatcher (`distribution_function(|_| None::<i64>)` so a slow download in one chat never serializes other updates)
 - `src/settings.rs`: `Settings::from_env()`, startup validation (`OWNER_ID`, `DATABASE_URL`, `MAX_MEDIA_BYTES`, `DOWNLOAD_DIR`, `COOKIES_FILE`, `COOKIE_REFRESH_URL`, `LLM_*`, `SEARCH_PROVIDER`, `TAVILY_API_KEY`, `SELF_IMPROVE_DIR`), per-chat locks (`chat_locks`), download semaphore (`Semaphore::new(2)`), and per-user download rate-limit semaphores
