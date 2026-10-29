@@ -52,7 +52,7 @@ fn youtube_format_selection_uses_exact_combined_sizes_and_compatible_codecs() {
 
 #[test]
 fn youtube_duration_filter_rejects_live_and_long_videos() {
-    assert_eq!(youtube_duration_filter(), "!is_live & duration < 1800");
+    assert_eq!(youtube_duration_filter(), "!is_live & duration <= 1800");
     assert_eq!(
         youtube_reject_reason(&serde_json::json!({"live_status":"is_live"})),
         Some("Video filtered")
@@ -162,7 +162,7 @@ printf '%s\n' "$dir/result.mp4" > "$manifest"
     assert!(
         download_args.contains("--extractor-args\nyoutube:player_client=default,web_embedded\n")
     );
-    assert!(download_args.contains("--match-filter\n!is_live & duration < 1800\n"));
+    assert!(download_args.contains("--match-filter\n!is_live & duration <= 1800\n"));
     let cookie_arg = |args: &str| {
         args.lines()
             .skip_while(|line| *line != "--cookies")

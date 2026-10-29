@@ -2,7 +2,7 @@ use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn youtube_duration_filter() -> String {
-    format!("!is_live & duration < {MAX_VIDEO_DURATION}")
+    format!("!is_live & duration <= {MAX_VIDEO_DURATION}")
 }
 
 pub(crate) fn youtube_reject_reason(info: &Value) -> Option<&'static str> {
