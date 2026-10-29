@@ -451,8 +451,10 @@ impl ChatConfig {
         self
     }
 
-    pub(crate) fn acquire(&self) -> Option<OwnedSemaphorePermit> {
-        self.requests.clone().try_acquire_owned().ok()
+    pub(crate) async fn acquire(&self) -> Option<OwnedSemaphorePermit> {
+        // Queue bursts instead of dropping the update when all model slots are
+        // busy; the dispatcher now processes chats concurrently.
+        self.requests.clone().acquire_owned().await.ok()
     }
 
     /// Spaces replies of one user by `CHAT_COOLDOWN` instead of dropping a
@@ -1291,7 +1293,7 @@ pub(crate) async fn reply_with_chat(
         return;
     }
     chat.pace(sender_id).await;
-    let Some(_permit) = chat.acquire() else {
+    let Some(_permit) = chat.acquire().await else {
         return;
     };
     let _ = bot
