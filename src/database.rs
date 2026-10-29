@@ -3,7 +3,10 @@ use crate::*;
 
 pub(crate) async fn open_database(url: &str) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(url)?.create_if_missing(true);
-    let pool = SqlitePoolOptions::new().max_connections(5).connect_with(options).await?;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS group_settings (chat_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)))",
     )
@@ -49,16 +52,25 @@ pub(crate) async fn open_database(url: &str) -> Result<SqlitePool, sqlx::Error> 
     )
     .execute(&pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ignored_users (user_id INTEGER PRIMARY KEY, until INTEGER NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL, source_chat_id INTEGER NOT NULL, source_message_id INTEGER)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS ignored_users_until ON ignored_users(until)")
+        .execute(&pool)
+        .await?;
     migrate_chat_turns(&pool).await?;
     init_cache(&pool).await?;
     Ok(pool)
 }
 
 pub(crate) async fn group_enabled(pool: &SqlitePool, chat_id: ChatId) -> Result<bool, sqlx::Error> {
-    let enabled: Option<i64> = sqlx::query_scalar("SELECT enabled FROM group_settings WHERE chat_id = ?")
-        .bind(chat_id.0)
-        .fetch_optional(pool)
-        .await?;
+    let enabled: Option<i64> =
+        sqlx::query_scalar("SELECT enabled FROM group_settings WHERE chat_id = ?")
+            .bind(chat_id.0)
+            .fetch_optional(pool)
+            .await?;
     Ok(enabled == Some(1))
 }
 
@@ -78,11 +90,10 @@ pub(crate) async fn set_group_enabled(
 }
 
 async fn migrate_chat_turns(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    let migrated: Option<String> = sqlx::query_scalar(
-        "SELECT value FROM memory_meta WHERE key = 'chat_turns_migrated'",
-    )
-    .fetch_optional(pool)
-    .await?;
+    let migrated: Option<String> =
+        sqlx::query_scalar("SELECT value FROM memory_meta WHERE key = 'chat_turns_migrated'")
+            .fetch_optional(pool)
+            .await?;
     if migrated.is_some() {
         return Ok(());
     }

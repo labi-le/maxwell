@@ -5,7 +5,10 @@ pub(crate) fn cleanup_old_downloads(download_dir: &Path) {
     let entries = match fs::read_dir(download_dir) {
         Ok(entries) => entries,
         Err(error) => {
-            eprintln!("Unable to scan {} for startup cleanup: {error}", download_dir.display());
+            eprintln!(
+                "Unable to scan {} for startup cleanup: {error}",
+                download_dir.display()
+            );
             return;
         }
     };
@@ -14,7 +17,10 @@ pub(crate) fn cleanup_old_downloads(download_dir: &Path) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                eprintln!("Unable to read an entry in {} for startup cleanup: {error}", download_dir.display());
+                eprintln!(
+                    "Unable to read an entry in {} for startup cleanup: {error}",
+                    download_dir.display()
+                );
                 continue;
             }
         };
@@ -24,7 +30,10 @@ pub(crate) fn cleanup_old_downloads(download_dir: &Path) {
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                eprintln!("Unable to inspect {} for startup cleanup: {error}", entry.path().display());
+                eprintln!(
+                    "Unable to inspect {} for startup cleanup: {error}",
+                    entry.path().display()
+                );
                 continue;
             }
         };
@@ -34,13 +43,19 @@ pub(crate) fn cleanup_old_downloads(download_dir: &Path) {
         let modified = match metadata.modified() {
             Ok(modified) => modified,
             Err(error) => {
-                eprintln!("Unable to read modification time of {} for startup cleanup: {error}", entry.path().display());
+                eprintln!(
+                    "Unable to read modification time of {} for startup cleanup: {error}",
+                    entry.path().display()
+                );
                 continue;
             }
         };
         if now.duration_since(modified).is_ok_and(|age| age > MAX_AGE) {
             if let Err(error) = fs::remove_dir_all(entry.path()) {
-                eprintln!("Unable to remove {} during startup cleanup: {error}", entry.path().display());
+                eprintln!(
+                    "Unable to remove {} during startup cleanup: {error}",
+                    entry.path().display()
+                );
             }
         }
     }

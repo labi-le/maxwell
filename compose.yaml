@@ -24,11 +24,17 @@ services:
       COOKIE_REFRESH_URL: http://cookie-refresh:8080
       LLM_BASE_URL: ${LLM_BASE_URL:-https://llm.labile.cc/v1}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4.1-flash}
+      CODE_DIR: /var/lib/maksut/code
     volumes:
       - data:/data
       # Bind the directory so atomic replacement of cookies.txt stays visible.
       - ${MAKSUT_COOKIES_DIR:-/home/eden/.local/share/maksut/cookies}:/run/secrets/maksut/:ro
       - ./self-improve:/var/lib/maksut/self-improve:rw
+      - ./src:/var/lib/maksut/code/src:ro
+      - ./tools:/var/lib/maksut/code/tools:ro
+      - ./docs:/var/lib/maksut/code/docs:ro
+      - ./Cargo.toml:/var/lib/maksut/code/Cargo.toml:ro
+      - ./README.md:/var/lib/maksut/code/README.md:ro
 
   cookie-refresh:
     build:

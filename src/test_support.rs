@@ -4,12 +4,37 @@ use crate::*;
 pub(crate) fn av_fixture() -> &'static Path {
     static FILE: std::sync::LazyLock<tempfile::NamedTempFile> = std::sync::LazyLock::new(|| {
         let file = tempfile::NamedTempFile::new().unwrap();
-        assert!(std::process::Command::new("ffmpeg").args([
-            "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=32x32:rate=5",
-            "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2",
-            "-t", "0.2", "-c:v", "libx264", "-threads:v", "1", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-f", "mp4", "-y",
-        ]).arg(file.path()).status().expect("ffmpeg fixture prerequisite").success());
+        assert!(std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=32x32:rate=5",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.2",
+                "-t",
+                "0.2",
+                "-c:v",
+                "libx264",
+                "-threads:v",
+                "1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-f",
+                "mp4",
+                "-y",
+            ])
+            .arg(file.path())
+            .status()
+            .expect("ffmpeg fixture prerequisite")
+            .success());
         file
     });
     FILE.path()
@@ -27,12 +52,20 @@ pub(crate) async fn fake_settings(root: &Path, script: &str) -> Settings {
     };
     fs::write(&fake, script).unwrap();
     fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
-    let db = open_database(&format!("sqlite://{}", root.join("state.db").display())).await.unwrap();
+    let db = open_database(&format!("sqlite://{}", root.join("state.db").display()))
+        .await
+        .unwrap();
     Settings {
-        owner_id: UserId(1), bot_username: "MyBot".into(), database: db,
-        download_dir: root.into(), ytdlp_bin: fake,
-        python_bin: PathBuf::from("/nonexistent/python"), twitter_helper: root.join("twitter-helper"),
-        cookies_file: None, cookie_refresh_url: None, chat: None,
+        owner_id: UserId(1),
+        bot_username: "MyBot".into(),
+        database: db,
+        download_dir: root.into(),
+        ytdlp_bin: fake,
+        python_bin: PathBuf::from("/nonexistent/python"),
+        twitter_helper: root.join("twitter-helper"),
+        cookies_file: None,
+        cookie_refresh_url: None,
+        chat: None,
         chat_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         self_improve_dir: root.join("self-improve"),
         sticker_replies: StickerReplies::for_tests(),
@@ -56,7 +89,8 @@ pub(crate) fn cookie_refresh_jar(fresh: bool) -> &'static str {
 pub(crate) async fn cookie_refresh_fixture(root: &Path, always_fail: bool) -> (Settings, PathBuf) {
     let source = root.join("mounted-cookies.txt");
     fs::write(&source, cookie_refresh_jar(false)).unwrap();
-    let script = format!(r#"#!/bin/sh
+    let script = format!(
+        r#"#!/bin/sh
 # CUSTOM_METADATA
 for arg in "$@"; do
   if [ "$arg" = --dump-single-json ]; then
@@ -86,14 +120,20 @@ if [ '{1}' = true ] || [ "$fresh" != yes ]; then
 fi
 printf video > "$dir/finished.mp4"
 printf '%s\n' "$dir/finished.mp4" > "$manifest"
-"#, root.display(), always_fail);
+"#,
+        root.display(),
+        always_fail
+    );
     let mut cfg = fake_settings(root, &script).await;
     cfg.cookies_file = Some(source.clone());
     (cfg, source)
 }
 
 #[cfg(unix)]
-pub(crate) async fn cookie_refresh_partial_fixture(root: &Path, completed_video: bool) -> (Settings, PathBuf) {
+pub(crate) async fn cookie_refresh_partial_fixture(
+    root: &Path,
+    completed_video: bool,
+) -> (Settings, PathBuf) {
     let source = root.join("mounted-cookies.txt");
     fs::write(&source, cookie_refresh_jar(false)).unwrap();
     let retry = if completed_video {
@@ -101,7 +141,8 @@ pub(crate) async fn cookie_refresh_partial_fixture(root: &Path, completed_video:
     } else {
         "printf '%s\\n' 'ERROR: [youtube] HTTP Error 403' >&2"
     };
-    let script = format!(r#"#!/bin/sh
+    let script = format!(
+        r#"#!/bin/sh
 # CUSTOM_METADATA
 for arg in "$@"; do
   if [ "$arg" = --dump-single-json ]; then
@@ -125,7 +166,10 @@ case "$(cat "$cookie")" in
   *) printf '%s\n' 'ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies.' >&2; exit 1 ;;
 esac
 exit 9
-"#, root.display(), retry);
+"#,
+        root.display(),
+        retry
+    );
     let mut cfg = fake_settings(root, &script).await;
     cfg.cookies_file = Some(source.clone());
     (cfg, source)
@@ -133,14 +177,22 @@ exit 9
 
 #[cfg(unix)]
 pub(crate) fn cookie_refresh_attempts(root: &Path) -> usize {
-    fs::read_to_string(root.join("attempts")).unwrap().lines().count()
+    fs::read_to_string(root.join("attempts"))
+        .unwrap()
+        .lines()
+        .count()
 }
 
 #[cfg(unix)]
 pub(crate) async fn fake_cookie_service(
-    source: PathBuf, status: u16,
-) -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    std::sync::Arc<std::sync::Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+    source: PathBuf,
+    status: u16,
+) -> (
+    Url,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -151,7 +203,9 @@ pub(crate) async fn fake_cookie_service(
     let sources_task = sources.clone();
     let task = tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { break };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
             let source = source.clone();
             let calls = calls_task.clone();
             let sources = sources_task.clone();
@@ -159,7 +213,9 @@ pub(crate) async fn fake_cookie_service(
                 let mut buffer = vec![0u8; 8192];
                 let size = stream.read(&mut buffer).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..size]);
-                if !request.starts_with("POST /refresh") { return; }
+                if !request.starts_with("POST /refresh") {
+                    return;
+                }
                 calls.fetch_add(1, Ordering::SeqCst);
                 if let Some((_, body)) = request.split_once("\r\n\r\n") {
                     if let Ok(value) = serde_json::from_str::<Value>(body.trim()) {
@@ -186,16 +242,24 @@ pub(crate) async fn fake_cookie_service(
             });
         }
     });
-    (Url::parse(&format!("http://{address}")).unwrap(), calls, sources, task)
+    (
+        Url::parse(&format!("http://{address}")).unwrap(),
+        calls,
+        sources,
+        task,
+    )
 }
 
 #[cfg(unix)]
 pub(crate) async fn cookie_warning_regression_fixture(
-    root: &Path, invalid_cookie_warning: bool, succeeds_with_stale_jar: bool,
+    root: &Path,
+    invalid_cookie_warning: bool,
+    succeeds_with_stale_jar: bool,
 ) -> (Settings, PathBuf) {
     let source = root.join("mounted-cookies.txt");
     fs::write(&source, cookie_refresh_jar(false)).unwrap();
-    let script = format!(r#"#!/bin/sh
+    let script = format!(
+        r#"#!/bin/sh
 # CUSTOM_METADATA
 for arg in "$@"; do
   if [ "$arg" = --dump-single-json ]; then
@@ -229,33 +293,61 @@ if [ "$fresh" = no ] && [ '{2}' = false ]; then
 fi
 printf video > "$dir/finished.mp4"
 printf '%s\n' "$dir/finished.mp4" > "$manifest"
-"#, root.display(), invalid_cookie_warning, succeeds_with_stale_jar);
+"#,
+        root.display(),
+        invalid_cookie_warning,
+        succeeds_with_stale_jar
+    );
     let mut cfg = fake_settings(root, &script).await;
     cfg.cookies_file = Some(source.clone());
     (cfg, source)
 }
 
-pub(crate) async fn mock_photo_response(status: &'static str, body: &'static [u8], with_length: bool, content_type: &'static str) -> reqwest::Response {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+pub(crate) async fn mock_photo_response(
+    status: &'static str,
+    body: &'static [u8],
+    with_length: bool,
+    content_type: &'static str,
+) -> reqwest::Response {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0u8; 1024];
         let _ = stream.read(&mut request).await.unwrap();
-        let length = if with_length { format!("Content-Length: {}\r\n", body.len()) } else { String::new() };
+        let length = if with_length {
+            format!("Content-Length: {}\r\n", body.len())
+        } else {
+            String::new()
+        };
         let headers = format!("HTTP/1.1 {status}\r\n{length}Content-Type: {content_type}\r\nLocation: http://127.0.0.1/private\r\nConnection: close\r\n\r\n");
         stream.write_all(headers.as_bytes()).await.unwrap();
         let _ = stream.write_all(body).await;
     });
-    reqwest::Client::builder().redirect(Policy::none()).build().unwrap()
-        .get(format!("http://{address}/photo.jpg")).send().await.unwrap()
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("http://{address}/photo.jpg"))
+        .send()
+        .await
+        .unwrap()
 }
 
 #[cfg(unix)]
-pub(crate) async fn recording_bot(video_ok: bool, delete_ok: bool)
-    -> (Bot, Arc<tokio::sync::Mutex<Vec<(String, String)>>>, tokio::task::JoinHandle<()>)
-{
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+pub(crate) async fn recording_bot(
+    video_ok: bool,
+    delete_ok: bool,
+) -> (
+    Bot,
+    Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let records = Arc::clone(&requests);
@@ -266,12 +358,17 @@ pub(crate) async fn recording_bot(video_ok: bool, delete_ok: bool)
             let mut chunk = [0u8; 4096];
             let (end, length) = loop {
                 let count = stream.read(&mut chunk).await.unwrap();
-                if count == 0 { panic!("incomplete Bot API request"); }
+                if count == 0 {
+                    panic!("incomplete Bot API request");
+                }
                 bytes.extend_from_slice(&chunk[..count]);
                 if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&bytes[..end]);
-                    let length = headers.lines().find_map(|line| line.to_ascii_lowercase()
-                        .strip_prefix("content-length: ").and_then(|length| length.parse::<usize>().ok()));
+                    let length = headers.lines().find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|length| length.parse::<usize>().ok())
+                    });
                     break (end + 4, length);
                 }
             };
@@ -280,10 +377,16 @@ pub(crate) async fn recording_bot(video_ok: bool, delete_ok: bool)
                 None => !bytes.ends_with(b"0\r\n\r\n"),
             } {
                 let count = stream.read(&mut chunk).await.unwrap();
-                if count == 0 { panic!("incomplete Bot API body"); }
+                if count == 0 {
+                    panic!("incomplete Bot API body");
+                }
                 bytes.extend_from_slice(&chunk[..count]);
             }
-            let path = String::from_utf8_lossy(&bytes).split_whitespace().nth(1).unwrap().to_string();
+            let path = String::from_utf8_lossy(&bytes)
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string();
             let body = String::from_utf8_lossy(&bytes[end..]).into_owned();
             let response = if (api_method_is(&path, "sendVideo") && !video_ok)
                 || (api_method_is(&path, "deleteMessage") && !delete_ok)
@@ -292,8 +395,10 @@ pub(crate) async fn recording_bot(video_ok: bool, delete_ok: bool)
             } else if api_method_is(&path, "deleteMessage") {
                 r#"{"ok":true,"result":true}"#
             } else if api_method_is(&path, "getChatMember") {
-                if serde_json::from_str::<Value>(&body).ok()
-                    .and_then(|request| request["user_id"].as_u64()) == Some(2)
+                if serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|request| request["user_id"].as_u64())
+                    == Some(2)
                 {
                     r#"{"ok":true,"result":{"status":"administrator","user":{"id":2,"is_bot":false,"first_name":"Admin"},"can_be_edited":false,"is_anonymous":false,"can_manage_chat":true,"can_delete_messages":true,"can_manage_video_chats":false,"can_restrict_members":false,"can_promote_members":false,"can_change_info":false,"can_invite_users":false}}"#
                 } else {
@@ -309,12 +414,18 @@ pub(crate) async fn recording_bot(video_ok: bool, delete_ok: bool)
             stream.write_all(response.as_bytes()).await.unwrap();
         }
     });
-    (Bot::new("123:dummy").set_api_url(Url::parse(&format!("http://{address}/")).unwrap()), requests, server)
+    (
+        Bot::new("123:dummy").set_api_url(Url::parse(&format!("http://{address}/")).unwrap()),
+        requests,
+        server,
+    )
 }
 
 #[cfg(unix)]
 pub(crate) fn api_method_is(path: &str, method: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|actual| actual.eq_ignore_ascii_case(method))
+    path.rsplit('/')
+        .next()
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(method))
 }
 
 #[cfg(target_os = "linux")]
@@ -332,11 +443,17 @@ pub(crate) async fn assert_descendant_stopped(pid: i32) {
 
 #[cfg(unix)]
 pub(crate) async fn metadata_caption_recorded_delivery(
-    root: &Path, url: &str, metadata: &Value, downloaded_title: Option<&str>,
-    downloaded_description: Option<&str>, message_text: Option<&str>,
-    sender: Value, video_ok: bool,
+    root: &Path,
+    url: &str,
+    metadata: &Value,
+    downloaded_title: Option<&str>,
+    downloaded_description: Option<&str>,
+    message_text: Option<&str>,
+    sender: Value,
+    video_ok: bool,
 ) -> (Vec<(String, String)>, usize) {
-    let script = format!(r#"#!/bin/sh
+    let script = format!(
+        r#"#!/bin/sh
 # CUSTOM_METADATA
 for arg in "$@"; do
   if [ "$arg" = --dump-single-json ]; then
@@ -355,9 +472,13 @@ done
 cp '{}' "$dir/finished.mp4"
 printf '%s\n' "$dir/finished.mp4" > "$manifest"
 printf '"%s"\t%s\t%s\n' "$dir/finished.mp4" '{}' '{}'
-"#, root.display(), metadata, av_fixture().display(),
+"#,
+        root.display(),
+        metadata,
+        av_fixture().display(),
         serde_json::to_string(downloaded_title.unwrap_or("")).unwrap(),
-        serde_json::to_string(&downloaded_description).unwrap());
+        serde_json::to_string(&downloaded_description).unwrap()
+    );
     let mut settings = fake_settings(root, &script).await;
     settings.max_media_bytes = 1_000_000;
     let (bot, records, server) = recording_bot(video_ok, true).await;
@@ -365,27 +486,124 @@ printf '"%s"\t%s\t%s\n' "$dir/finished.mp4" '{}' '{}'
         "message_id": 73, "date": 1700000000,
         "chat": {"id": 1, "type": "private"},
         "from": sender, "text": message_text.unwrap_or(url)
-    })).unwrap();
-    time::timeout(Duration::from_secs(10), handle_message(bot, message, Arc::new(settings)))
-        .await.expect("metadata caption delivery stalled").unwrap();
+    }))
+    .unwrap();
+    time::timeout(
+        Duration::from_secs(10),
+        handle_message(bot, message, Arc::new(settings)),
+    )
+    .await
+    .expect("metadata caption delivery stalled")
+    .unwrap();
     let captured = records.lock().await.clone();
     server.abort();
-    let probes = fs::read_to_string(root.join("probes")).unwrap_or_default().lines().count();
+    let probes = fs::read_to_string(root.join("probes"))
+        .unwrap_or_default()
+        .lines()
+        .count();
     (captured, probes)
 }
 
 #[cfg(unix)]
 pub(crate) fn metadata_caption_from_upload(body: &str) -> &str {
-    body.split("name=\"caption\"").nth(1).expect("multipart caption field")
-        .split_once("\r\n\r\n").expect("multipart caption value").1
+    body.split("name=\"caption\"")
+        .nth(1)
+        .expect("multipart caption field")
+        .split_once("\r\n\r\n")
+        .expect("multipart caption value")
+        .1
         .trim_start_matches("\r\n")
-        .split_once("\r\n").expect("caption chunk size").1
-        .split("\r\n").next().expect("caption text")
+        .split_once("\r\n")
+        .expect("caption chunk size")
+        .1
+        .split("\r\n")
+        .next()
+        .expect("caption text")
 }
 
 #[cfg(unix)]
 pub(crate) fn metadata_caption_from_video(calls: &[(String, String)]) -> &str {
-    let body = &calls.iter().find(|(path, _)| api_method_is(path, "sendVideo"))
-        .expect("expected a video upload").1;
+    let body = &calls
+        .iter()
+        .find(|(path, _)| api_method_is(path, "sendVideo"))
+        .expect("expected a video upload")
+        .1;
     metadata_caption_from_upload(body)
+}
+
+pub(crate) fn test_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+pub(crate) struct MockServer {
+    pub(crate) url: Url,
+    pub(crate) requests: Arc<std::sync::Mutex<Vec<String>>>,
+    pub(crate) task: tokio::task::JoinHandle<()>,
+}
+
+/// Minimal OpenAI-compatible endpoint: one queued response per request.
+pub(crate) async fn mock_server(responses: Vec<String>) -> MockServer {
+    use tokio::net::TcpListener;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    let queue = Arc::new(std::sync::Mutex::new(responses));
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let captured = captured.clone();
+            let queue = queue.clone();
+            tokio::spawn(async move {
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                    if let Some(head_end) = test_find(&buffer, b"\r\n\r\n") {
+                        let head =
+                            String::from_utf8_lossy(&buffer[..head_end]).to_ascii_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if buffer.len() >= head_end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buffer).into_owned());
+                let body = queue.lock().unwrap().drain(..1).next().unwrap_or_else(|| {
+                    r#"{"choices":[{"message":{"role":"assistant","content":""}}]}"#.into()
+                });
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body);
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    MockServer {
+        url: Url::parse(&format!("http://{address}/")).unwrap(),
+        requests,
+        task,
+    }
+}
+
+pub(crate) fn body_of(request: &str) -> Value {
+    let (_, body) = request.split_once("\r\n\r\n").unwrap_or(("", ""));
+    serde_json::from_str(body).unwrap_or(Value::Null)
 }

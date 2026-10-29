@@ -120,6 +120,26 @@ class ApprovalTests(unittest.TestCase):
             self.assertIn("review", body)
             self.assertNotIn("\n", calls[0][calls[0].index("--title") + 1][-20:])
 
+    def test_close_issue_uses_deploy_comment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            calls = []
+            module.run = lambda args, **kwargs: calls.append(args) or type(
+                "P", (), {"returncode": 0, "stdout": ""})()
+            module.close_issue({"issue_url": "https://github.com/labi-le/maxwell/issues/7"}, "Задеплоено.")
+            self.assertEqual(calls[0][0], module.GH)
+            self.assertEqual(calls[0][1:4], ["issue", "close", "7"])
+            self.assertIn("--comment", calls[0])
+            self.assertEqual(calls[0][calls[0].index("--comment") + 1], "Задеплоено.")
+
+    def test_close_issue_ignores_non_github_urls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            calls = []
+            module.run = lambda args, **kwargs: calls.append(args)
+            module.close_issue({"issue_url": "https://example.com/issue/1"}, "Задеплоено.")
+            self.assertEqual(calls, [])
+
     def test_plan_task_does_not_publish_a_planner_failure_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             module = load(tmp)
@@ -136,6 +156,65 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(value["status"], "failed")
             self.assertNotIn("secret", raw)
             self.assertEqual(value["summary"], "planner failed")
+
+    def test_implement_planned_preserves_owner_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "plan-1"
+            worktree.mkdir(parents=True)
+            module.make_worktree = lambda task_id, base: worktree
+            captured = {}
+            module.implement = lambda task, base, wt: captured.update(task)
+            module.implement_planned({
+                "id": "plan-1", "goal": "g", "chat_id": -100,
+                "source_chat_id": -100, "proposed_by": 42,
+                "proposed_by_name": "owner", "issue_url": "https://github.com/x/y/issues/1",
+                "spec": "s", "review": "r", "base": "base",
+            })
+            self.assertEqual(captured["source_chat_id"], -100)
+            self.assertEqual(captured["proposed_by"], 42)
+            self.assertEqual(captured["proposed_by_name"], "owner")
+            self.assertEqual(captured["issue_url"], "https://github.com/x/y/issues/1")
+            module.status(captured, "running", "started", base="base")
+            stored = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-1.json").read_text())
+            self.assertEqual(stored["source_chat_id"], -100)
+            self.assertEqual(stored["proposed_by"], 42)
+            self.assertEqual(stored["proposed_by_name"], "owner")
+            self.assertEqual(stored["issue_url"], "https://github.com/x/y/issues/1")
+
+    def test_run_agent_sends_job_to_worker_without_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            repo = pathlib.Path(tmp) / "repo"
+            (repo / "self_improve").mkdir(parents=True, exist_ok=True)
+            (repo / "self_improve" / "config.yml").write_text("")
+            worktree = pathlib.Path(tmp) / "queue" / "work" / "plan-1"
+            worktree.mkdir(parents=True)
+            module.ensure_proxy = lambda: None
+            module.read_llm_key = lambda: "secret"
+            module.docker = lambda *args, **kwargs: type(
+                "P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            calls = []
+            def fake_run(args, **kwargs):
+                calls.append((args, kwargs))
+                return type("P", (), {
+                    "returncode": 0,
+                    "stdout": json.dumps({"ok": True, "output": "done"}),
+                    "stderr": "",
+                })()
+            module.run = fake_run
+            ok, output = module.run_agent(
+                {"id": "plan-1"}, worktree, "prompt", "read", "model",
+                30, "0.1", "planner",
+            )
+            self.assertTrue(ok)
+            self.assertEqual(output, "done")
+            self.assertEqual(calls[0][0][-1], str(repo / "tools" / "omp_worker.py"))
+            job = json.loads(calls[0][1]["input"])
+            self.assertEqual(job["workspace"], str(worktree))
+            self.assertEqual(job["role"], "planner")
+            self.assertNotIn("secret", calls[0][1]["input"])
+            self.assertIn("secret", (pathlib.Path(tmp) / "queue" / "profile" / "plan-1" / "models.yml").read_text())
 
     def test_approval_dispatches_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +244,23 @@ class ApprovalTests(unittest.TestCase):
             value = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "task-2.json").read_text())
             self.assertEqual(value["status"], "rejected")
 
+
+    def test_queue_sort_key_orders_priority_then_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            low = pathlib.Path(tmp) / "queue" / "outbox" / "low.json"
+            high = pathlib.Path(tmp) / "queue" / "outbox" / "high.json"
+            low.write_text(json.dumps({"priority": 0}))
+            high.write_text(json.dumps({"priority": 5}))
+            ordered = sorted([low, high], key=module.queue_sort_key)
+            self.assertEqual([path.name for path in ordered], ["high.json", "low.json"])
+
+    def test_status_preserves_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = load(tmp)
+            module.status({"id": "plan-1", "priority": 7}, "planned", "ok")
+            stored = json.loads((pathlib.Path(tmp) / "queue" / "outbox" / "plan-1.json").read_text())
+            self.assertEqual(stored["priority"], 7)
 
 if __name__ == "__main__":
     unittest.main()

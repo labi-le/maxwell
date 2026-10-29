@@ -37,60 +37,112 @@ pub(crate) struct PreparedFile {
     pub(crate) converted: Option<tempfile::TempPath>,
 }
 
-pub(crate) async fn prepare_media(file: &MediaFile, max_bytes: u64, deadline: time::Instant)
-    -> Result<PreparedFile, DeliveryError>
-{
+pub(crate) async fn prepare_media(
+    file: &MediaFile,
+    max_bytes: u64,
+    deadline: time::Instant,
+) -> Result<PreparedFile, DeliveryError> {
     let mut kind = file.kind;
     if kind == MediaKind::Video {
-        require_video_audio(&file.path, deadline).await.map_err(DeliveryError::preparation)?;
+        require_video_audio(&file.path, deadline)
+            .await
+            .map_err(DeliveryError::preparation)?;
     }
     let converted = if kind == MediaKind::Document && convertible_video(&file.path) {
-        if let Some(dimensions) = video_dimensions(&file.path, deadline, "V:0").await
+        if let Some(dimensions) = video_dimensions(&file.path, deadline, "V:0")
+            .await
             .map_err(DeliveryError::preparation)?
         {
-            require_video_audio(&file.path, deadline).await.map_err(DeliveryError::preparation)?;
-            let output = convert_video(&file.path, dimensions, max_bytes, deadline).await
+            require_video_audio(&file.path, deadline)
+                .await
+                .map_err(DeliveryError::preparation)?;
+            let output = convert_video(&file.path, dimensions, max_bytes, deadline)
+                .await
                 .map_err(DeliveryError::preparation)?;
             kind = MediaKind::Video;
             Some(output)
-        } else if video_dimensions(&file.path, deadline, "v:0").await
-            .map_err(DeliveryError::preparation)?.is_some()
+        } else if video_dimensions(&file.path, deadline, "v:0")
+            .await
+            .map_err(DeliveryError::preparation)?
+            .is_some()
         {
-            return Err(DeliveryError::preparation("Видеофайл содержит только обложку".into()));
+            return Err(DeliveryError::preparation(
+                "Видеофайл содержит только обложку".into(),
+            ));
         } else {
             None
         }
     } else {
         None
     };
-    let path: &Path = converted.as_ref().map_or(file.path.as_path(), |output| output.as_ref());
-    Ok(PreparedFile { input: InputFile::file(path.to_path_buf()), kind, converted })
+    let path: &Path = converted
+        .as_ref()
+        .map_or(file.path.as_path(), |output| output.as_ref());
+    Ok(PreparedFile {
+        input: InputFile::file(path.to_path_buf()),
+        kind,
+        converted,
+    })
 }
 
-pub(crate) async fn send_single_media(bot: &Bot, chat_id: ChatId, input: InputFile, kind: MediaKind,
-    caption: &str, max_bytes: u64, allow_document_fallback: bool)
-    -> Result<DeliveryReceipt, DeliveryError>
-{
-    let fallback_input = (allow_document_fallback && matches!(kind, MediaKind::Photo | MediaKind::Audio))
-        .then(|| input.clone());
+pub(crate) async fn send_single_media(
+    bot: &Bot,
+    chat_id: ChatId,
+    input: InputFile,
+    kind: MediaKind,
+    caption: &str,
+    max_bytes: u64,
+    allow_document_fallback: bool,
+) -> Result<DeliveryReceipt, DeliveryError> {
+    let fallback_input = (allow_document_fallback
+        && matches!(kind, MediaKind::Photo | MediaKind::Audio))
+    .then(|| input.clone());
     let sent = match kind {
-        MediaKind::Photo => bot.send_photo(chat_id, input).caption(caption)
-            .parse_mode(ParseMode::Html).disable_notification(true).await,
-        MediaKind::Video => bot.send_video(chat_id, input).caption(caption)
-            .parse_mode(ParseMode::Html).supports_streaming(true).disable_notification(true).await,
-        MediaKind::Audio => bot.send_audio(chat_id, input).caption(caption)
-            .parse_mode(ParseMode::Html).disable_notification(true).await,
-        MediaKind::Document => bot.send_document(chat_id, input).caption(caption)
-            .parse_mode(ParseMode::Html).disable_notification(true).await,
+        MediaKind::Photo => {
+            bot.send_photo(chat_id, input)
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .disable_notification(true)
+                .await
+        }
+        MediaKind::Video => {
+            bot.send_video(chat_id, input)
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .supports_streaming(true)
+                .disable_notification(true)
+                .await
+        }
+        MediaKind::Audio => {
+            bot.send_audio(chat_id, input)
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .disable_notification(true)
+                .await
+        }
+        MediaKind::Document => {
+            bot.send_document(chat_id, input)
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .disable_notification(true)
+                .await
+        }
     };
     match sent {
         Ok(message) => Ok(DeliveryReceipt { kind, message }),
         Err(error) => {
             if user_errors::rejected_media_upload(&error) {
                 if let Some(input) = fallback_input {
-                    return bot.send_document(chat_id, input).caption(caption)
-                        .parse_mode(ParseMode::Html).disable_notification(true).await
-                        .map(|message| DeliveryReceipt { kind: MediaKind::Document, message })
+                    return bot
+                        .send_document(chat_id, input)
+                        .caption(caption)
+                        .parse_mode(ParseMode::Html)
+                        .disable_notification(true)
+                        .await
+                        .map(|message| DeliveryReceipt {
+                            kind: MediaKind::Document,
+                            message,
+                        })
                         .map_err(|error| DeliveryError::request(error, max_bytes));
                 }
             }
@@ -99,12 +151,26 @@ pub(crate) async fn send_single_media(bot: &Bot, chat_id: ChatId, input: InputFi
     }
 }
 
-pub(crate) async fn send_media(bot: &Bot, chat_id: ChatId, file: &MediaFile, caption: &str,
-    max_bytes: u64, deadline: time::Instant) -> Result<DeliveryReceipt, DeliveryError>
-{
+pub(crate) async fn send_media(
+    bot: &Bot,
+    chat_id: ChatId,
+    file: &MediaFile,
+    caption: &str,
+    max_bytes: u64,
+    deadline: time::Instant,
+) -> Result<DeliveryReceipt, DeliveryError> {
     let prepared = prepare_media(file, max_bytes, deadline).await?;
     // The converted TempPath remains owned here until the upload has completed.
-    send_single_media(bot, chat_id, prepared.input, prepared.kind, caption, max_bytes, true).await
+    send_single_media(
+        bot,
+        chat_id,
+        prepared.input,
+        prepared.kind,
+        caption,
+        max_bytes,
+        true,
+    )
+    .await
 }
 
 pub(crate) struct DeliveryItem<'a> {
@@ -122,30 +188,48 @@ pub(crate) struct DeliveryReport {
 
 impl DeliveryReport {
     pub(crate) fn new() -> Self {
-        Self { delivered: 0, cached_items: Some(Vec::new()), error: None }
+        Self {
+            delivered: 0,
+            cached_items: Some(Vec::new()),
+            error: None,
+        }
     }
 
     pub(crate) fn push(&mut self, kind: MediaKind, message: Message, description: Option<&str>) {
         self.delivered += 1;
-        if self.cached_items.is_none() { return; }
+        if self.cached_items.is_none() {
+            return;
+        }
         let file_id = match kind {
-            MediaKind::Photo => message.photo().and_then(|photos| photos.iter()
-                .max_by_key(|photo| u64::from(photo.width) * u64::from(photo.height)))
+            MediaKind::Photo => message
+                .photo()
+                .and_then(|photos| {
+                    photos
+                        .iter()
+                        .max_by_key(|photo| u64::from(photo.width) * u64::from(photo.height))
+                })
                 .map(|photo| &photo.file.id.0),
             MediaKind::Video => message.video().map(|video| &video.file.id.0),
             MediaKind::Audio => message.audio().map(|audio| &audio.file.id.0),
             MediaKind::Document => message.document().map(|document| &document.file.id.0),
         };
         match file_id.filter(|id| !id.is_empty()) {
-            Some(file_id) => self.cached_items.as_mut().expect("cache IDs are being collected").push(
-                CachedMedia {
-                    kind, file_id: file_id.clone(),
+            Some(file_id) => self
+                .cached_items
+                .as_mut()
+                .expect("cache IDs are being collected")
+                .push(CachedMedia {
+                    kind,
+                    file_id: file_id.clone(),
                     description: description.map(|text| {
                         let mut units = 0;
-                        let end = text.char_indices().find_map(|(index, ch)| {
-                            units += ch.len_utf16();
-                            (units > 1024).then_some(index)
-                        }).unwrap_or(text.len());
+                        let end = text
+                            .char_indices()
+                            .find_map(|(index, ch)| {
+                                units += ch.len_utf16();
+                                (units > 1024).then_some(index)
+                            })
+                            .unwrap_or(text.len());
                         text[..end].to_owned()
                     }),
                 }),
@@ -155,15 +239,24 @@ impl DeliveryReport {
 }
 
 pub(crate) fn album_compatible(first: MediaKind, next: MediaKind) -> bool {
-    first == next || matches!((first, next),
-        (MediaKind::Photo, MediaKind::Video) | (MediaKind::Video, MediaKind::Photo))
+    first == next
+        || matches!(
+            (first, next),
+            (MediaKind::Photo, MediaKind::Video) | (MediaKind::Video, MediaKind::Photo)
+        )
 }
 
-pub(crate) async fn deliver_items(bot: &Bot, chat_id: ChatId, mut items: Vec<DeliveryItem<'_>>,
-    max_bytes: u64, allow_document_fallback: bool) -> DeliveryReport
-{
+pub(crate) async fn deliver_items(
+    bot: &Bot,
+    chat_id: ChatId,
+    mut items: Vec<DeliveryItem<'_>>,
+    max_bytes: u64,
+    allow_document_fallback: bool,
+) -> DeliveryReport {
     let mut report = DeliveryReport::new();
-    if !allow_document_fallback { report.cached_items = None; }
+    if !allow_document_fallback {
+        report.cached_items = None;
+    }
     let mut start = 0;
     while start < items.len() {
         if items[start].input.is_none() {
@@ -171,7 +264,8 @@ pub(crate) async fn deliver_items(bot: &Bot, chat_id: ChatId, mut items: Vec<Del
             continue;
         }
         let mut end = start + 1;
-        while end < items.len() && end - start < 10
+        while end < items.len()
+            && end - start < 10
             && items[end].input.is_some()
             && album_compatible(items[start].kind, items[end].kind)
         {
@@ -179,58 +273,79 @@ pub(crate) async fn deliver_items(bot: &Bot, chat_id: ChatId, mut items: Vec<Del
         }
         if end - start == 1 {
             let item = &mut items[start];
-            let Some(input) = item.input.take() else { start = end; continue; };
-            match send_single_media(bot, chat_id, input,
-                item.kind, &item.caption, max_bytes, allow_document_fallback).await
+            let Some(input) = item.input.take() else {
+                start = end;
+                continue;
+            };
+            match send_single_media(
+                bot,
+                chat_id,
+                input,
+                item.kind,
+                &item.caption,
+                max_bytes,
+                allow_document_fallback,
+            )
+            .await
             {
                 Ok(receipt) => report.push(receipt.kind, receipt.message, item.description),
-                Err(error) => { report.error = Some(error); break; }
+                Err(error) => {
+                    report.error = Some(error);
+                    break;
+                }
             }
         } else {
             let mut seen_captions: Vec<String> = Vec::new();
-            let media: Vec<_> = items[start..end].iter_mut().filter_map(|item| {
-                let input = item.input.take()?;
-                let caption = std::mem::take(&mut item.caption);
-                // Telegram shows per-item album captions, so a shared attribution block
-                // would repeat once per image. Keep each distinct caption, but attach an
-                // already-delivered identical caption only to its first album item.
-                let duplicate = seen_captions.iter().any(|seen| *seen == caption);
-                if !caption.is_empty() && !duplicate {
-                    seen_captions.push(caption.clone());
-                }
-                let caption = if duplicate { String::new() } else { caption };
-                Some(match item.kind {
-                    MediaKind::Photo => {
-                        let mut media = InputMediaPhoto::new(input);
-                        if !caption.is_empty() {
-                            media = media.caption(caption).parse_mode(ParseMode::Html);
-                        }
-                        InputMedia::Photo(media)
+            let media: Vec<_> = items[start..end]
+                .iter_mut()
+                .filter_map(|item| {
+                    let input = item.input.take()?;
+                    let caption = std::mem::take(&mut item.caption);
+                    // Telegram shows per-item album captions, so a shared attribution block
+                    // would repeat once per image. Keep each distinct caption, but attach an
+                    // already-delivered identical caption only to its first album item.
+                    let duplicate = seen_captions.iter().any(|seen| *seen == caption);
+                    if !caption.is_empty() && !duplicate {
+                        seen_captions.push(caption.clone());
                     }
-                    MediaKind::Video => {
-                        let mut media = InputMediaVideo::new(input).supports_streaming(true);
-                        if !caption.is_empty() {
-                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                    let caption = if duplicate { String::new() } else { caption };
+                    Some(match item.kind {
+                        MediaKind::Photo => {
+                            let mut media = InputMediaPhoto::new(input);
+                            if !caption.is_empty() {
+                                media = media.caption(caption).parse_mode(ParseMode::Html);
+                            }
+                            InputMedia::Photo(media)
                         }
-                        InputMedia::Video(media)
-                    }
-                    MediaKind::Audio => {
-                        let mut media = InputMediaAudio::new(input);
-                        if !caption.is_empty() {
-                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        MediaKind::Video => {
+                            let mut media = InputMediaVideo::new(input).supports_streaming(true);
+                            if !caption.is_empty() {
+                                media = media.caption(caption).parse_mode(ParseMode::Html);
+                            }
+                            InputMedia::Video(media)
                         }
-                        InputMedia::Audio(media)
-                    }
-                    MediaKind::Document => {
-                        let mut media = InputMediaDocument::new(input);
-                        if !caption.is_empty() {
-                            media = media.caption(caption).parse_mode(ParseMode::Html);
+                        MediaKind::Audio => {
+                            let mut media = InputMediaAudio::new(input);
+                            if !caption.is_empty() {
+                                media = media.caption(caption).parse_mode(ParseMode::Html);
+                            }
+                            InputMedia::Audio(media)
                         }
-                        InputMedia::Document(media)
-                    }
+                        MediaKind::Document => {
+                            let mut media = InputMediaDocument::new(input);
+                            if !caption.is_empty() {
+                                media = media.caption(caption).parse_mode(ParseMode::Html);
+                            }
+                            InputMedia::Document(media)
+                        }
+                    })
                 })
-            }).collect();
-            match bot.send_media_group(chat_id, media).disable_notification(true).await {
+                .collect();
+            match bot
+                .send_media_group(chat_id, media)
+                .disable_notification(true)
+                .await
+            {
                 Ok(messages) if messages.len() == end - start => {
                     for (item, message) in items[start..end].iter().zip(messages) {
                         report.push(item.kind, message, item.description);
@@ -256,14 +371,23 @@ pub(crate) async fn deliver_items(bot: &Bot, chat_id: ChatId, mut items: Vec<Del
     report
 }
 
-pub(crate) async fn deliver_fresh(bot: &Bot, chat_id: ChatId, result: &DownloadResult,
-    sender: &teloxide::types::User, url: &Url,
-    max_bytes: u64, deadline: time::Instant)
-    -> DeliveryReport
-{
-    let description = |file: &MediaFile| result.file_descriptions.iter()
-        .find(|(path, _)| path == &file.path).map(|(_, text)| text.as_str())
-        .or(result.description.as_deref());
+pub(crate) async fn deliver_fresh(
+    bot: &Bot,
+    chat_id: ChatId,
+    result: &DownloadResult,
+    sender: &teloxide::types::User,
+    url: &Url,
+    max_bytes: u64,
+    deadline: time::Instant,
+) -> DeliveryReport {
+    let description = |file: &MediaFile| {
+        result
+            .file_descriptions
+            .iter()
+            .find(|(path, _)| path == &file.path)
+            .map(|(_, text)| text.as_str())
+            .or(result.description.as_deref())
+    };
     let mut report = DeliveryReport::new();
     // A one-item publication uses the same preparation and singleton upload entry point.
     if let [file] = result.selection.files.as_slice() {
@@ -303,14 +427,23 @@ pub(crate) async fn deliver_fresh(bot: &Bot, chat_id: ChatId, result: &DownloadR
         };
         match prepare_media(file, max_bytes, deadline).await {
             Ok(prepared) => {
-                items.push(DeliveryItem { input: Some(prepared.input), kind: prepared.kind, caption, description });
-                if let Some(output) = prepared.converted { converted.push(output); }
+                items.push(DeliveryItem {
+                    input: Some(prepared.input),
+                    kind: prepared.kind,
+                    caption,
+                    description,
+                });
+                if let Some(output) = prepared.converted {
+                    converted.push(output);
+                }
             }
             Err(error) => preparation_error = Some(error),
         }
     }
     // All conversion guards remain live while contiguous compatibility batches are uploaded.
     let mut report = deliver_items(bot, chat_id, items, max_bytes, true).await;
-    if report.error.is_none() { report.error = preparation_error; }
+    if report.error.is_none() {
+        report.error = preparation_error;
+    }
     report
 }

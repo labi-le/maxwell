@@ -3,25 +3,47 @@ use crate::*;
 
 pub(crate) fn cookie_source(url: &Url) -> &'static str {
     match url.host_str().unwrap_or("") {
-        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be" => "youtube",
-        "tiktok.com" | "www.tiktok.com" | "m.tiktok.com" | "vm.tiktok.com" | "vt.tiktok.com" => "tiktok",
-        "pinterest.com" | "www.pinterest.com" | "pinterest.ca" | "www.pinterest.ca"
-        | "pinterest.co.uk" | "www.pinterest.co.uk" | "pin.it" => "pinterest",
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be" => {
+            "youtube"
+        }
+        "tiktok.com" | "www.tiktok.com" | "m.tiktok.com" | "vm.tiktok.com" | "vt.tiktok.com" => {
+            "tiktok"
+        }
+        "pinterest.com"
+        | "www.pinterest.com"
+        | "pinterest.ca"
+        | "www.pinterest.ca"
+        | "pinterest.co.uk"
+        | "www.pinterest.co.uk"
+        | "pin.it" => "pinterest",
         "instagram.com" | "www.instagram.com" => "instagram",
-        "x.com" | "www.x.com" | "twitter.com" | "www.twitter.com" | "mobile.twitter.com" => "twitter",
+        "x.com" | "www.x.com" | "twitter.com" | "www.twitter.com" | "mobile.twitter.com" => {
+            "twitter"
+        }
         _ => "generic",
     }
 }
 
 pub(crate) fn is_cookie_auth_detail(detail: &str) -> bool {
-    matches!(detail, "Authentication required" | "Cookies expired" | "Cookies unavailable")
+    matches!(
+        detail,
+        "Authentication required" | "Cookies expired" | "Cookies unavailable"
+    )
 }
 
 pub(crate) async fn request_cookie_refresh(
-    cfg: &Settings, source: &str, deadline: time::Instant, events: &mut Vec<FailureDiagnostic>,
+    cfg: &Settings,
+    source: &str,
+    deadline: time::Instant,
+    events: &mut Vec<FailureDiagnostic>,
 ) -> bool {
-    let Some(base) = &cfg.cookie_refresh_url else { return false };
-    trace_event(events, FailureDiagnostic::new("refresh", "Request submitted"));
+    let Some(base) = &cfg.cookie_refresh_url else {
+        return false;
+    };
+    trace_event(
+        events,
+        FailureDiagnostic::new("refresh", "Request submitted"),
+    );
     let remaining = deadline.saturating_duration_since(time::Instant::now());
     if remaining < Duration::from_secs(1) {
         trace_event(events, FailureDiagnostic::new("refresh", "Timed out"));
@@ -32,7 +54,11 @@ pub(crate) async fn request_cookie_refresh(
         trace_event(events, FailureDiagnostic::new("refresh", "Request failed"));
         return false;
     };
-    let client = match reqwest::Client::builder().no_proxy().timeout(timeout).build() {
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .timeout(timeout)
+        .build()
+    {
         Ok(client) => client,
         Err(_) => {
             trace_event(events, FailureDiagnostic::new("refresh", "Request failed"));
@@ -40,7 +66,8 @@ pub(crate) async fn request_cookie_refresh(
         }
     };
     let body = serde_json::json!({"source": source}).to_string();
-    let mut response = match client.post(target)
+    let mut response = match client
+        .post(target)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
@@ -57,7 +84,9 @@ pub(crate) async fn request_cookie_refresh(
         }
     };
     if !response.status().is_success()
-        || response.content_length().is_some_and(|length| length > 4096)
+        || response
+            .content_length()
+            .is_some_and(|length| length > 4096)
     {
         trace_event(events, FailureDiagnostic::new("refresh", "Request failed"));
         return false;
@@ -83,7 +112,8 @@ pub(crate) async fn request_cookie_refresh(
             }
         }
     }
-    let acknowledged = serde_json::from_slice::<Value>(&bytes).ok()
+    let acknowledged = serde_json::from_slice::<Value>(&bytes)
+        .ok()
         .and_then(|value| value.get("ok").and_then(Value::as_bool))
         == Some(true);
     if !acknowledged {

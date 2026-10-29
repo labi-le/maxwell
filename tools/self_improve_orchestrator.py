@@ -2,9 +2,9 @@
 """Host-side, agent-free orchestrator for Maksut self-improvement tasks.
 
 The chat bot only writes owner-approved goal files. This process snapshots the
-current working tree, runs an isolated implementer container, tests the result,
-and deploys only after a second owner approval. It never interprets chat text as
-a shell command.
+current working tree, asks the OMP worker to run a planner/reviewer/implementer
+against a disposable worktree, tests the result, and deploys only after a second
+owner approval. It never interprets chat text as a shell command.
 """
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ FORBIDDEN = (
     "self_improve/",
     "tools/self_improve_orchestrator.py",
     "tools/self_improve_deploy.py",
+    "tools/omp_worker.py",
     "target/",
 )
 
@@ -58,8 +59,8 @@ def log(message: str) -> None:
     print(f"self-improve: {message}", file=sys.stderr, flush=True)
 
 
-def run(args: list[str], timeout: int = 120, env: dict | None = None, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(args, timeout=timeout, env=env, text=True, capture_output=True, check=check)
+def run(args: list[str], timeout: int = 120, env: dict | None = None, check: bool = False, input: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(args, timeout=timeout, env=env, text=True, capture_output=True, check=check, input=input)
 
 
 def output(proc: subprocess.CompletedProcess, limit: int = 16000) -> str:
@@ -100,6 +101,7 @@ def status(task: dict, state: str, summary: str = "", **extra) -> None:
         "branch": extra.get("branch", ""),
         "worktree": extra.get("worktree", ""),
         "log": extra.get("log", ""),
+        "priority": int(extra.get("priority", task.get("priority", 0)) or 0),
         "created_at": int(time.time()),
     }
     atomic_json(QUEUE / "outbox" / f"{task['id']}.json", value)
@@ -253,49 +255,40 @@ def run_agent(
     ensure_proxy()
     name = f"maksut-improve-{task['id']}-{role}"[:63]
     docker("rm", "-f", name, check=False)
-    command = (
-        'mkdir -p "$HOME/.omp/agent" && '
-        'cp /profile/config.yml /profile/models.yml "$HOME/.omp/agent/" || exit 1; '
-        '"$OMP" models refresh >/dev/null 2>&1 || true; '
-        'exec "$OMP" -p --tools="$TOOLS" --no-lsp --no-session '
-        '--no-title --approval-mode=write --thinking="$THINKING" --max-cost="$MAX_COST" --max-time="$MAX_TIME" '
-        '--model="$MODEL" "$IMPROVE_PROMPT"'
-    )
-    args = [
-        "run", "--rm", "--name", name, "--network", INTERNAL_NET,
-        "--user", "1000:1000", "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges",
-        "--cpus", "2", "--memory", "2g", "--pids-limit", "256",
-        "--read-only", "--tmpfs", "/tmp:rw,size=512m",
-        "-v", "/nix/store:/nix/store:ro",
-        "-v", f"{worktree}:/workspace:rw",
-        "-v", f"{profile}:/profile:ro",
-        "-w", "/workspace",
-        "-e", "HOME=/tmp/home",
-        "-e", f"OMP={OMP}",
-        "-e", f"MODEL={model}",
-        "-e", f"TOOLS={tools}",
-        "-e", f"MAX_COST={max_cost}",
-        "-e", f"MAX_TIME={timeout}",
-        "-e", f"THINKING={thinking}",
-        "-e", "HTTPS_PROXY=http://maksut-self-improve-proxy:3128",
-        "-e", "HTTP_PROXY=http://maksut-self-improve-proxy:3128",
-        "-e", "https_proxy=http://maksut-self-improve-proxy:3128",
-        "-e", "http_proxy=http://maksut-self-improve-proxy:3128",
-        "-e", f"IMPROVE_PROMPT={text}",
-        "--entrypoint", "/bin/sh", IMPLEMENTER_IMAGE, "-c", command,
-    ]
+    job = {
+        "job_id": task["id"],
+        "role": role,
+        "workspace": str(worktree),
+        "profile_dir": str(profile),
+        "prompt": text,
+        "tools": tools,
+        "model": model,
+        "timeout": timeout,
+        "max_cost": max_cost,
+        "thinking": thinking,
+        "container_name": name,
+        "image": IMPLEMENTER_IMAGE,
+        "network": INTERNAL_NET,
+        "omp": OMP,
+        "nix_store": "/nix/store",
+        "proxy_url": "http://maksut-self-improve-proxy:3128",
+    }
     try:
-        proc = docker(*args, timeout=timeout, check=False)
+        proc = run(
+            [sys.executable, str(REPO / "tools" / "omp_worker.py")],
+            timeout=timeout + 30,
+            input=json.dumps(job, ensure_ascii=False),
+        )
     except subprocess.TimeoutExpired:
         docker("rm", "-f", name, check=False)
         return False, f"{role} timeout"
-    if proc.returncode != 0:
-        return False, output(proc)
-    text = (proc.stdout or "").strip()
-    if not text:
-        text = (proc.stderr or "").strip()
-    return True, text
+    try:
+        result = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return False, output(proc) or f"{role} worker failed"
+    if not result.get("ok"):
+        return False, str(result.get("output") or result.get("error") or f"{role} worker failed")
+    return True, str(result.get("output") or "")
 
 
 def run_implementer(task: dict, worktree: Path) -> tuple[bool, str]:
@@ -378,7 +371,7 @@ def create_issue(task: dict, spec: str, review: str) -> str:
     return url if url.startswith("https://github.com/") else ""
 
 
-def close_issue(value: dict) -> None:
+def close_issue(value: dict, comment: str = "План отклонён владельцем.") -> None:
     url = value.get("issue_url", "")
     if not isinstance(url, str) or not url.startswith("https://github.com/"):
         return
@@ -387,7 +380,7 @@ def close_issue(value: dict) -> None:
         return
     run([
         GH, "issue", "close", number, "--repo", GITHUB_REPO,
-        "--comment", "План отклонён владельцем.",
+        "--comment", comment,
     ], timeout=30, check=False)
 
 
@@ -485,6 +478,11 @@ def implement_planned(value: dict) -> None:
         "id": value["id"],
         "goal": value.get("goal", ""),
         "chat_id": value.get("chat_id", 0),
+        "source_chat_id": value.get("source_chat_id", 0),
+        "proposed_by": value.get("proposed_by", 0),
+        "proposed_by_name": value.get("proposed_by_name", ""),
+        "issue_url": value.get("issue_url", ""),
+        "priority": value.get("priority", 0),
         "spec": value.get("spec", ""),
         "review": value.get("review", ""),
         "stage": "plan",
@@ -563,6 +561,7 @@ def deploy(task: dict, base: str, branch: str, worktree: Path, paths: list[str])
         status(task, "failed", "deploy health check failed; rollback attempted")
         return
     status(task, "deployed", "deployed", files=paths)
+    close_issue(task, "Задеплоено.")
     run(["git", "-C", str(REPO), "worktree", "remove", "--force", str(worktree)], check=False)
     shutil.rmtree(QUEUE / "profile" / task["id"], ignore_errors=True)
 
@@ -590,8 +589,17 @@ def process_planned_approval(value: dict) -> None:
     implement_planned(value)
 
 
+def queue_sort_key(path: Path) -> tuple[int, str]:
+    try:
+        value = json.loads(path.read_text())
+        priority = int(value.get("priority", 0))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        priority = 0
+    return (-priority, path.name)
+
+
 def process_approvals() -> None:
-    for path in sorted((QUEUE / "outbox").glob("*.json")):
+    for path in sorted((QUEUE / "outbox").glob("*.json"), key=queue_sort_key):
         try:
             value = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -674,7 +682,11 @@ def main() -> int:
             time.sleep(POLL_SECONDS)
             continue
         process_approvals()
-        for path in sorted((QUEUE / "inbox").glob("*.json")):
+        for path in sorted((QUEUE / "inbox").glob("*.json"), key=queue_sort_key):
+            # An approval can arrive while a long planner is running. Check it
+            # before taking the next inbox item instead of starving it until
+            # the whole inbox drains.
+            process_approvals()
             try:
                 task = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):

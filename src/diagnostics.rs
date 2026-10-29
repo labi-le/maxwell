@@ -9,7 +9,11 @@ pub(crate) struct FailureDiagnostic {
 
 impl FailureDiagnostic {
     pub(crate) fn new(stage: &'static str, detail: &'static str) -> Self {
-        Self { stage, detail, exit_code: None }
+        Self {
+            stage,
+            detail,
+            exit_code: None,
+        }
     }
 }
 
@@ -28,27 +32,49 @@ pub(crate) struct DownloadFailure {
 
 impl DownloadFailure {
     pub(crate) fn new(reason: String, stage: &'static str, detail: &'static str) -> Self {
-        Self { reason, diagnostic: FailureDiagnostic::new(stage, detail), events: Vec::new() }
+        Self {
+            reason,
+            diagnostic: FailureDiagnostic::new(stage, detail),
+            events: Vec::new(),
+        }
     }
 }
 
 pub(crate) fn trace_event(events: &mut Vec<FailureDiagnostic>, event: FailureDiagnostic) {
-    if events.len() < 12 { events.push(event); }
+    if events.len() < 12 {
+        events.push(event);
+    }
 }
 
-pub(crate) fn source_user_diagnostic(diagnostic: FailureDiagnostic, events: &[FailureDiagnostic]) -> FailureDiagnostic {
+pub(crate) fn source_user_diagnostic(
+    diagnostic: FailureDiagnostic,
+    events: &[FailureDiagnostic],
+) -> FailureDiagnostic {
     // Keep the video/authentication origin in the journal, but display the actionable failure.
     if diagnostic.stage != "yt-dlp"
-        || !matches!(diagnostic.detail, "Authentication required" | "Cookies expired" | "Download failed")
+        || !matches!(
+            diagnostic.detail,
+            "Authentication required" | "Cookies expired" | "Download failed"
+        )
     {
         return diagnostic;
     }
-    events.iter().rev().find(|event| {
-        matches!(event.stage, "yt-dlp" | "metadata" | "photo-page" | "photo-cdn")
-            || (event.stage == "selection" && event.detail == "Size limit")
-            || (event.stage == "retry"
-                && matches!(event.detail, "Launch failed" | "Attempt failed" | "Preparation failed"))
-    }).copied().unwrap_or(diagnostic)
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.stage,
+                "yt-dlp" | "metadata" | "photo-page" | "photo-cdn"
+            ) || (event.stage == "selection" && event.detail == "Size limit")
+                || (event.stage == "retry"
+                    && matches!(
+                        event.detail,
+                        "Launch failed" | "Attempt failed" | "Preparation failed"
+                    ))
+        })
+        .copied()
+        .unwrap_or(diagnostic)
 }
 
 pub(crate) async fn record_failure(pool: &SqlitePool, url: &Url, failure: FailureDiagnostic) {
@@ -56,7 +82,10 @@ pub(crate) async fn record_failure(pool: &SqlitePool, url: &Url, failure: Failur
 }
 
 pub(crate) async fn record_failure_with_events(
-    pool: &SqlitePool, url: &Url, failure: FailureDiagnostic, events: &[FailureDiagnostic],
+    pool: &SqlitePool,
+    url: &Url,
+    failure: FailureDiagnostic,
+    events: &[FailureDiagnostic],
 ) {
     let result = async {
         let mut transaction = pool.begin().await?;

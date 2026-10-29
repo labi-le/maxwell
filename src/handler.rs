@@ -3,20 +3,39 @@ use crate::*;
 
 pub(crate) async fn handle_command(bot: &Bot, message: &Message, cfg: &Settings, command: &str) {
     if !message.chat.is_group() && !message.chat.is_supergroup() {
-        if message.chat.is_private() && message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
+        if message.chat.is_private()
+            && message
+                .from
+                .as_ref()
+                .is_some_and(|user| user.id == cfg.owner_id)
+        {
             let _ = bot.send_message(message.chat.id, "Команды /maksut status|on|off работают только в группе; в личном чате ссылки доступны только владельцу бота.").disable_notification(true).await;
         }
         return;
     }
-    if !message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
+    if !message
+        .from
+        .as_ref()
+        .is_some_and(|user| user.id == cfg.owner_id)
+    {
         return;
     }
     let result = match command {
         "status" => group_enabled(&cfg.database, message.chat.id).await,
-        "on" => set_group_enabled(&cfg.database, message.chat.id, true).await.map(|()| true),
-        "off" => set_group_enabled(&cfg.database, message.chat.id, false).await.map(|()| false),
+        "on" => set_group_enabled(&cfg.database, message.chat.id, true)
+            .await
+            .map(|()| true),
+        "off" => set_group_enabled(&cfg.database, message.chat.id, false)
+            .await
+            .map(|()| false),
         _ => {
-            let _ = bot.send_message(message.chat.id, "Используйте /maksut status, /maksut on или /maksut off.").disable_notification(true).await;
+            let _ = bot
+                .send_message(
+                    message.chat.id,
+                    "Используйте /maksut status, /maksut on или /maksut off.",
+                )
+                .disable_notification(true)
+                .await;
             return;
         }
     };
@@ -25,27 +44,47 @@ pub(crate) async fn handle_command(bot: &Bot, message: &Message, cfg: &Settings,
         Ok(false) => "Максут выключен в этой группе.",
         Err(_) => "Не удалось прочитать или сохранить настройки группы.",
     };
-    let _ = bot.send_message(message.chat.id, reply).disable_notification(true).await;
+    let _ = bot
+        .send_message(message.chat.id, reply)
+        .disable_notification(true)
+        .await;
 }
 
 pub(crate) fn maksut_command<'a>(text: &'a str, username: &str) -> Option<&'a str> {
     let mut parts = text.split_whitespace();
     let name = parts.next()?;
-    let addressed = name == "/maksut" || name.strip_prefix("/maksut@")
-        .is_some_and(|target| !target.is_empty() && target.eq_ignore_ascii_case(username));
+    let addressed = name == "/maksut"
+        || name
+            .strip_prefix("/maksut@")
+            .is_some_and(|target| !target.is_empty() && target.eq_ignore_ascii_case(username));
     addressed.then(|| parts.next().unwrap_or(""))
 }
 
 /// Replies with the sticker for the first standalone «да»/«нет» in the message.
 /// Only the owner can trigger actions; other participants are read-only.
 async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: &str) -> bool {
-    if !message.from.as_ref().is_some_and(|user| user.id == cfg.owner_id) {
+    if !message
+        .from
+        .as_ref()
+        .is_some_and(|user| user.id == cfg.owner_id)
+    {
         return false;
     }
-    let Some(unique_id) = sticker_rule(text) else { return false };
-    let Some(file_id) = cfg.sticker_replies.file_id(unique_id) else { return false };
+    // A standalone «да»/«нет» must not hide a pending plan/deploy gate from
+    // the model. The read-only probe writes nothing.
+    if crate::self_improve::has_pending_decision(&cfg.self_improve_dir, cfg.owner_id) {
+        return false;
+    }
+    let Some(unique_id) = sticker_rule(text) else {
+        return false;
+    };
+    let Some(file_id) = cfg.sticker_replies.file_id(unique_id) else {
+        return false;
+    };
     if !message.chat.is_private()
-        && !group_enabled(&cfg.database, message.chat.id).await.is_ok_and(|enabled| enabled)
+        && !group_enabled(&cfg.database, message.chat.id)
+            .await
+            .is_ok_and(|enabled| enabled)
     {
         return false;
     }
@@ -56,27 +95,138 @@ async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: 
         request
     };
     if let Ok(sent) = request.disable_notification(true).await {
-        let _ = crate::memory::record_message(&cfg.database, message.chat.id, 0, "максут", "assistant", "[стикер]", Some(sent.id.0), crate::memory::FLAG_JUNK).await;
+        let _ = crate::memory::record_message(
+            &cfg.database,
+            message.chat.id,
+            0,
+            "максут",
+            "assistant",
+            "[стикер]",
+            Some(sent.id.0),
+            crate::memory::FLAG_JUNK,
+        )
+        .await;
     }
     true
 }
 
-pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings>) -> ResponseResult<()> {
+pub(crate) async fn handle_message(
+    bot: Bot,
+    message: Message,
+    cfg: Arc<Settings>,
+) -> ResponseResult<()> {
     let text = message.text().or_else(|| message.caption()).unwrap_or("");
-    let media = message_image(&message)
-        .or_else(|| message.reply_to_message().and_then(message_image));
-    if text.is_empty() && media.is_none() { return Ok(()); }
-    let Some(sender) = message.from.as_ref().filter(|user| !user.is_bot) else { return Ok(()) };
+    let current_media = message_image(&message);
+    let reply_media = message.reply_to_message().and_then(message_image);
+    if text.is_empty() && current_media.is_none() && reply_media.is_none() {
+        return Ok(());
+    }
+    let Some(sender) = message.from.as_ref().filter(|user| !user.is_bot) else {
+        return Ok(());
+    };
     let owner = sender.id == cfg.owner_id;
-    let sender_name = sender.username.clone().unwrap_or_else(|| sender.first_name.clone());
-    let log_text = if text.trim().is_empty() { "[вложение]" } else { text };
+    let sender_name = sender
+        .username
+        .clone()
+        .unwrap_or_else(|| sender.first_name.clone());
+    let log_text = if text.trim().is_empty() {
+        "[вложение]"
+    } else {
+        text
+    };
     let mut flags = crate::memory::detect_flags(log_text);
-    if text.trim().is_empty() && media.is_some() {
+    if text.trim().is_empty() && (current_media.is_some() || reply_media.is_some()) {
         flags |= crate::memory::FLAG_JUNK;
+    }
+    let now = crate::memory::unix_now();
+    if !owner {
+        match crate::memory::ignore_active(&cfg.database, sender.id, now).await {
+            Ok(true) => {
+                let flags = flags | crate::memory::FLAG_IGNORED;
+                let _ = crate::memory::record_message(
+                    &cfg.database,
+                    message.chat.id,
+                    sender.id.0 as i64,
+                    &sender_name,
+                    "user",
+                    log_text,
+                    Some(message.id.0),
+                    flags,
+                )
+                .await;
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("Ignore lookup failed: {error}"),
+        }
+        let group = message.chat.is_group() || message.chat.is_supergroup();
+        if group
+            && crate::memory::injection_attempt(log_text)
+            && group_enabled(&cfg.database, message.chat.id)
+                .await
+                .is_ok_and(|enabled| enabled)
+        {
+            if let Err(error) = crate::memory::ignore_user(
+                &cfg.database,
+                sender.id,
+                now,
+                message.chat.id,
+                message.id.0,
+            )
+            .await
+            {
+                eprintln!("Ignore write failed: {error}");
+            }
+            let flags = flags | crate::memory::FLAG_INJECTION | crate::memory::FLAG_IGNORED;
+            let _ = crate::memory::record_message(
+                &cfg.database,
+                message.chat.id,
+                sender.id.0 as i64,
+                &sender_name,
+                "user",
+                log_text,
+                Some(message.id.0),
+                flags,
+            )
+            .await;
+            return Ok(());
+        }
+    }
+    let mut media = current_media;
+    if media.is_none() {
+        if let Some(reply_media) = reply_media {
+            let reply_author = message
+                .reply_to_message()
+                .and_then(|reply| reply.from.as_ref());
+            let reply_ignored = match reply_author {
+                Some(user) if user.id != cfg.owner_id => {
+                    crate::memory::ignore_active(&cfg.database, user.id, now)
+                        .await
+                        .is_ok_and(|active| active)
+                }
+                _ => false,
+            };
+            if !reply_ignored {
+                media = Some(reply_media);
+            }
+        }
+    }
+    if text.is_empty() && media.is_none() {
+        return Ok(());
     }
     if text.trim_start().starts_with('/') {
         flags |= crate::memory::FLAG_JUNK;
-        let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
+        let _ = crate::memory::record_message(
+            &cfg.database,
+            message.chat.id,
+            sender.id.0 as i64,
+            &sender_name,
+            "user",
+            log_text,
+            Some(message.id.0),
+            flags,
+        )
+        .await;
         if crate::self_improve::handle_improve(&bot, &message, &cfg, text).await {
             return Ok(());
         }
@@ -86,26 +236,53 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
         return Ok(());
     }
     if message.chat.is_private() && sender.id != cfg.owner_id {
-        let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
-        let _ = crate::self_improve::handle_natural_improvement(&bot, &message, &cfg, text).await;
+        let _ = crate::memory::record_message(
+            &cfg.database,
+            message.chat.id,
+            sender.id.0 as i64,
+            &sender_name,
+            "user",
+            log_text,
+            Some(message.id.0),
+            flags,
+        )
+        .await;
         return Ok(());
     }
     if !message.chat.is_private() && !message.chat.is_group() && !message.chat.is_supergroup() {
         return Ok(());
     }
-    let _ = crate::memory::record_message(&cfg.database, message.chat.id, sender.id.0 as i64, &sender_name, "user", log_text, Some(message.id.0), flags).await;
-    if crate::self_improve::handle_natural_improvement(&bot, &message, &cfg, text).await {
+    let _ = crate::memory::record_message(
+        &cfg.database,
+        message.chat.id,
+        sender.id.0 as i64,
+        &sender_name,
+        "user",
+        log_text,
+        Some(message.id.0),
+        flags,
+    )
+    .await;
+    if owner
+        && message.chat.is_private()
+        && crate::self_improve::handle_owner_text(&bot, &message, &cfg, text).await
+    {
         return Ok(());
     }
     let Some(url) = first_link(text) else {
         if reply_with_sticker(&bot, &message, &cfg, text).await {
             return Ok(());
         }
-        let reply_to_bot = message.reply_to_message()
+        let reply_to_bot = message
+            .reply_to_message()
             .and_then(|reply| reply.from.as_ref())
-            .is_some_and(|user| user.is_bot
-                && user.username.as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(&cfg.bot_username)));
+            .is_some_and(|user| {
+                user.is_bot
+                    && user
+                        .username
+                        .as_deref()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&cfg.bot_username))
+            });
         let private = message.chat.is_private();
         let prompt = match chat_prompt(text, private, &cfg.bot_username, reply_to_bot) {
             Some(prompt) => Some(prompt),
@@ -122,20 +299,35 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             } else {
                 prompt
             };
-            reply_with_chat(&bot, &message, &cfg, sender.id, &sender_name, owner, &prompt, image.as_ref()).await;
+            reply_with_chat(
+                &bot,
+                &message,
+                &cfg,
+                sender.id,
+                &sender_name,
+                owner,
+                &prompt,
+                image.as_ref(),
+            )
+            .await;
         }
         return Ok(());
     };
-    if !owner {
-        return Ok(());
-    }
     let user_semaphore = {
         let mut limits = cfg.user_rate_limits.write().await;
-        Arc::clone(limits.entry(sender.id)
-            .or_insert_with(|| Arc::new(Semaphore::new(USER_DOWNLOAD_LIMIT))))
+        Arc::clone(
+            limits
+                .entry(sender.id)
+                .or_insert_with(|| Arc::new(Semaphore::new(USER_DOWNLOAD_LIMIT))),
+        )
     };
     let Ok(_user_permit) = user_semaphore.try_acquire_owned() else {
-        record_failure(&cfg.database, &url, FailureDiagnostic::new("queue", "Rate limit")).await;
+        record_failure(
+            &cfg.database,
+            &url,
+            FailureDiagnostic::new("queue", "Rate limit"),
+        )
+        .await;
         return Ok(());
     };
     if !message.chat.is_private() {
@@ -143,13 +335,23 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             Ok(true) => {}
             Ok(false) => return Ok(()),
             Err(_) => {
-                record_failure(&cfg.database, &url, FailureDiagnostic::new("settings", "Database unavailable")).await;
+                record_failure(
+                    &cfg.database,
+                    &url,
+                    FailureDiagnostic::new("settings", "Database unavailable"),
+                )
+                .await;
                 return Ok(());
             }
         }
     }
     let Ok(_permit) = cfg.downloads.acquire().await else {
-        record_failure(&cfg.database, &url, FailureDiagnostic::new("queue", "Download unavailable")).await;
+        record_failure(
+            &cfg.database,
+            &url,
+            FailureDiagnostic::new("queue", "Download unavailable"),
+        )
+        .await;
         return Ok(());
     };
     // Recheck after queueing: an administrator may have disabled the group while we waited.
@@ -158,7 +360,12 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             Ok(true) => {}
             Ok(false) => return Ok(()),
             Err(_) => {
-                record_failure(&cfg.database, &url, FailureDiagnostic::new("settings", "Database unavailable")).await;
+                record_failure(
+                    &cfg.database,
+                    &url,
+                    FailureDiagnostic::new("settings", "Database unavailable"),
+                )
+                .await;
                 return Ok(());
             }
         }
@@ -170,14 +377,24 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             let caption = match media_caption(sender, &url, item.description.as_deref()) {
                 Ok(caption) => caption,
                 Err(reason) => {
-                    record_failure(&cfg.database, &url, FailureDiagnostic::new("caption", "Caption too long")).await;
-                    let _ = bot.send_message(message.chat.id, reason).disable_notification(true).await;
+                    record_failure(
+                        &cfg.database,
+                        &url,
+                        FailureDiagnostic::new("caption", "Caption too long"),
+                    )
+                    .await;
+                    let _ = bot
+                        .send_message(message.chat.id, reason)
+                        .disable_notification(true)
+                        .await;
                     return Ok(());
                 }
             };
             items.push(DeliveryItem {
                 input: Some(InputFile::file_id(FileId(item.file_id.clone()))),
-                kind: item.kind, caption, description: item.description.as_deref(),
+                kind: item.kind,
+                caption,
+                description: item.description.as_deref(),
             });
         }
         let report = deliver_items(&bot, message.chat.id, items, cfg.max_media_bytes, false).await;
@@ -192,61 +409,115 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
                 }
                 if !error.invalid_cached_file || report.delivered != 0 {
                     record_failure(&cfg.database, &url, error.diagnostic).await;
-                    let warning = format!("Не все медиа доставлены; исходная ссылка сохранена. {}", error.reason);
-                    let _ = bot.send_message(message.chat.id, warning).disable_notification(true).await;
+                    let warning = format!(
+                        "Не все медиа доставлены; исходная ссылка сохранена. {}",
+                        error.reason
+                    );
+                    let _ = bot
+                        .send_message(message.chat.id, warning)
+                        .disable_notification(true)
+                        .await;
                     return Ok(());
                 }
                 // Definitively invalid IDs before any delivery permit one fresh attempt below.
             }
         }
     }
-    let dir = match tempfile::Builder::new().prefix("post-").tempdir_in(&cfg.download_dir) {
+    let dir = match tempfile::Builder::new()
+        .prefix("post-")
+        .tempdir_in(&cfg.download_dir)
+    {
         Ok(dir) => dir,
         Err(_) => {
-            record_failure(&cfg.database, &url, FailureDiagnostic::new("storage", "Download directory unavailable")).await;
-            let _ = bot.send_message(message.chat.id, "Не удалось создать папку загрузки.").disable_notification(true).await;
+            record_failure(
+                &cfg.database,
+                &url,
+                FailureDiagnostic::new("storage", "Download directory unavailable"),
+            )
+            .await;
+            let _ = bot
+                .send_message(message.chat.id, "Не удалось создать папку загрузки.")
+                .disable_notification(true)
+                .await;
             return Ok(());
         }
     };
     let deadline = time::Instant::now() + DOWNLOAD_TIMEOUT;
-    let result = download_with_timeout(&url, &cfg, dir.path(),
-        deadline.saturating_duration_since(time::Instant::now())).await;
+    let result = download_with_timeout(
+        &url,
+        &cfg,
+        dir.path(),
+        deadline.saturating_duration_since(time::Instant::now()),
+    )
+    .await;
     let result = match result {
         Ok(result) => result,
         Err(failure) => {
-            record_failure_with_events(&cfg.database, &url, failure.diagnostic, &failure.events).await;
+            record_failure_with_events(&cfg.database, &url, failure.diagnostic, &failure.events)
+                .await;
             let reply = if failure.diagnostic.detail == "Download failed"
                 && failure.diagnostic.stage != "metadata"
             {
                 failure.reason
             } else {
                 user_errors::diagnostic_message(
-                    source_user_diagnostic(failure.diagnostic, &failure.events), cfg.max_media_bytes)
+                    source_user_diagnostic(failure.diagnostic, &failure.events),
+                    cfg.max_media_bytes,
+                )
             };
-            let _ = bot.send_message(message.chat.id, reply).disable_notification(true).await;
+            let _ = bot
+                .send_message(message.chat.id, reply)
+                .disable_notification(true)
+                .await;
             return Ok(());
         }
     };
     if result.selection.files.is_empty() {
         let diagnostic = result.diagnostic.unwrap_or_else(|| {
-            FailureDiagnostic::new("selection", if result.selection.size_skipped != 0 {
-                "Size limit"
-            } else if result.selection.skipped != 0 { "Media skipped" } else { "No sendable media" })
+            FailureDiagnostic::new(
+                "selection",
+                if result.selection.size_skipped != 0 {
+                    "Size limit"
+                } else if result.selection.skipped != 0 {
+                    "Media skipped"
+                } else {
+                    "No sendable media"
+                },
+            )
         });
         let mut events = result.events;
-        if events.is_empty() { trace_event(&mut events, diagnostic); }
+        if events.is_empty() {
+            trace_event(&mut events, diagnostic);
+        }
         record_failure_with_events(&cfg.database, &url, diagnostic, &events).await;
         let reply = user_errors::diagnostic_message(
-            source_user_diagnostic(diagnostic, &events), cfg.max_media_bytes);
-        let _ = bot.send_message(message.chat.id, reply).disable_notification(true).await;
+            source_user_diagnostic(diagnostic, &events),
+            cfg.max_media_bytes,
+        );
+        let _ = bot
+            .send_message(message.chat.id, reply)
+            .disable_notification(true)
+            .await;
         return Ok(());
     }
-    let report = deliver_fresh(&bot, message.chat.id, &result, sender, &url,
-        cfg.max_media_bytes, deadline).await;
+    let report = deliver_fresh(
+        &bot,
+        message.chat.id,
+        &result,
+        sender,
+        &url,
+        cfg.max_media_bytes,
+        deadline,
+    )
+    .await;
     let found = result.selection.files.len();
     let skipped = result.selection.skipped;
-    let complete = result.process_ok && !result.limited && !result.twitter_photos_failed
-        && result.diagnostic.is_none() && skipped == 0 && report.delivered == found
+    let complete = result.process_ok
+        && !result.limited
+        && !result.twitter_photos_failed
+        && result.diagnostic.is_none()
+        && skipped == 0
+        && report.delivered == found
         && report.error.is_none();
     if complete {
         if let Some(items) = report.cached_items {
@@ -263,15 +534,29 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
         } else if result.twitter_photos_failed {
             FailureDiagnostic::new("metadata", "Photo metadata failed")
         } else {
-            FailureDiagnostic::new("selection", if result.selection.size_skipped != 0 {
-                "Size limit"
-            } else { "Media skipped" })
+            FailureDiagnostic::new(
+                "selection",
+                if result.selection.size_skipped != 0 {
+                    "Size limit"
+                } else {
+                    "Media skipped"
+                },
+            )
         };
         let user_diagnostic = source_user_diagnostic(diagnostic, &result.events);
         let mut events = result.events;
         if skipped != 0 && diagnostic.stage != "selection" {
-            trace_event(&mut events, FailureDiagnostic::new("selection",
-                if result.selection.size_skipped != 0 { "Size limit" } else { "Media skipped" }));
+            trace_event(
+                &mut events,
+                FailureDiagnostic::new(
+                    "selection",
+                    if result.selection.size_skipped != 0 {
+                        "Size limit"
+                    } else {
+                        "Media skipped"
+                    },
+                ),
+            );
         }
         if report.error.is_some() || events.is_empty() {
             trace_event(&mut events, diagnostic);
@@ -294,19 +579,30 @@ pub(crate) async fn handle_message(bot: Bot, message: Message, cfg: Arc<Settings
             warning.push_str(&error.reason);
         } else {
             warning.push_str(&user_errors::diagnostic_message(
-                user_diagnostic, cfg.max_media_bytes));
+                user_diagnostic,
+                cfg.max_media_bytes,
+            ));
         }
-        let _ = bot.send_message(message.chat.id, warning).disable_notification(true).await;
+        let _ = bot
+            .send_message(message.chat.id, warning)
+            .disable_notification(true)
+            .await;
     }
     Ok(())
 }
-
 
 pub(crate) async fn handle_callback_query(
     bot: Bot,
     query: teloxide::types::CallbackQuery,
     cfg: Arc<Settings>,
 ) -> ResponseResult<()> {
+    if query.from.id != cfg.owner_id
+        && crate::memory::ignore_active(&cfg.database, query.from.id, crate::memory::unix_now())
+            .await
+            .is_ok_and(|active| active)
+    {
+        return Ok(());
+    }
     crate::self_improve::handle_callback(&bot, &query, &cfg).await;
     Ok(())
 }

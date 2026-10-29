@@ -13,12 +13,21 @@ pub(crate) struct DownloadResult {
 }
 
 #[cfg(test)]
-pub(crate) async fn download(url: &Url, cfg: &Settings, dir: &Path) -> Result<DownloadResult, String> {
-    download_with_timeout(url, cfg, dir, DOWNLOAD_TIMEOUT).await.map_err(|failure| failure.reason)
+pub(crate) async fn download(
+    url: &Url,
+    cfg: &Settings,
+    dir: &Path,
+) -> Result<DownloadResult, String> {
+    download_with_timeout(url, cfg, dir, DOWNLOAD_TIMEOUT)
+        .await
+        .map_err(|failure| failure.reason)
 }
 
 pub(crate) async fn tiktok_metadata_with_refresh(
-    url: &Url, cfg: &Settings, dir: &Path, deadline: time::Instant,
+    url: &Url,
+    cfg: &Settings,
+    dir: &Path,
+    deadline: time::Instant,
 ) -> Result<ImageMetadata, DownloadFailure> {
     let first = extract_tiktok_images(url, cfg, deadline).await;
     let first = match first {
@@ -54,10 +63,20 @@ pub(crate) async fn tiktok_metadata_with_refresh(
 }
 
 pub(crate) async fn images_metadata_with_refresh(
-    url: &Url, cfg: &Settings, source: &str, dir: &Path, deadline: time::Instant,
+    url: &Url,
+    cfg: &Settings,
+    source: &str,
+    dir: &Path,
+    deadline: time::Instant,
 ) -> Result<ImageMetadata, DownloadFailure> {
-    let first = extract_images(url, cfg, source, dir,
-        deadline.saturating_duration_since(time::Instant::now())).await;
+    let first = extract_images(
+        url,
+        cfg,
+        source,
+        dir,
+        deadline.saturating_duration_since(time::Instant::now()),
+    )
+    .await;
     let first = match first {
         Ok(metadata) => return Ok(metadata),
         Err(failure) => failure,
@@ -76,8 +95,14 @@ pub(crate) async fn images_metadata_with_refresh(
         first.events = merged;
         return Err(first);
     }
-    match extract_images(url, cfg, source, dir,
-        deadline.saturating_duration_since(time::Instant::now())).await
+    match extract_images(
+        url,
+        cfg,
+        source,
+        dir,
+        deadline.saturating_duration_since(time::Instant::now()),
+    )
+    .await
     {
         Ok(metadata) => Ok(metadata),
         Err(mut second) => {
@@ -93,7 +118,10 @@ pub(crate) async fn images_metadata_with_refresh(
 }
 
 pub(crate) async fn download_with_timeout(
-    url: &Url, cfg: &Settings, dir: &Path, duration: Duration,
+    url: &Url,
+    cfg: &Settings,
+    dir: &Path,
+    duration: Duration,
 ) -> Result<DownloadResult, DownloadFailure> {
     let deadline = time::Instant::now() + duration;
     let mut refresh_events = Vec::new();
@@ -103,21 +131,32 @@ pub(crate) async fn download_with_timeout(
                 || validate_cookie_jar(path).is_err()
             {
                 let mut failure = DownloadFailure::new(
-                    "Не удалось подготовить cookies".into(), "preflight", "Cookies unavailable");
+                    "Не удалось подготовить cookies".into(),
+                    "preflight",
+                    "Cookies unavailable",
+                );
                 failure.events = refresh_events;
                 return Err(failure);
             }
         }
         if process_cookies(Some(path), dir).is_err() {
             let mut failure = DownloadFailure::new(
-                "Не удалось подготовить временный каталог".into(), "preflight", "File I/O error");
+                "Не удалось подготовить временный каталог".into(),
+                "preflight",
+                "File I/O error",
+            );
             failure.events = refresh_events;
             return Err(failure);
         }
     }
     let resolved = if short_link_family(url).is_some() {
-        Some(resolve_short_link(url, deadline).await.ok_or_else(|| DownloadFailure::new(
-            "Не удалось разрешить короткую ссылку".into(), "short-link", "Resolution failed"))?)
+        Some(resolve_short_link(url, deadline).await.ok_or_else(|| {
+            DownloadFailure::new(
+                "Не удалось разрешить короткую ссылку".into(),
+                "short-link",
+                "Resolution failed",
+            )
+        })?)
     } else {
         None
     };
@@ -128,21 +167,32 @@ pub(crate) async fn download_with_timeout(
     let mut photo_diagnostic = None;
     // The helper may time out; start yt-dlp at the same time so finished videos
     // are still available when photo extraction fails.
-    let (metadata, video_result) = if source == Some("twitter") && twitter_status_id(url).is_some() {
+    let (metadata, video_result) = if source == Some("twitter") && twitter_status_id(url).is_some()
+    {
         let remaining = deadline.saturating_duration_since(time::Instant::now());
         let (photos, video) = tokio::join!(
             extract_twitter_images(url, cfg, dir, remaining),
             download_videos(url, cfg, dir, remaining)
         );
-        let video_has_files = video.as_ref().is_ok_and(|result| !result.selection.files.is_empty());
+        let video_has_files = video
+            .as_ref()
+            .is_ok_and(|result| !result.selection.files.is_empty());
         let photos = match photos {
             Ok(photos) => Some(photos),
             Err(error) => {
                 twitter_failed = true;
-                let detail = if error.auth { "Authentication required" } else { "Photo metadata failed" };
+                let detail = if error.auth {
+                    "Authentication required"
+                } else {
+                    "Photo metadata failed"
+                };
                 photo_diagnostic = Some(FailureDiagnostic::new("metadata", detail));
-                trace_event(&mut twitter_events, FailureDiagnostic::new("metadata", detail));
-                if error.auth && cfg.cookies_file.is_some()
+                trace_event(
+                    &mut twitter_events,
+                    FailureDiagnostic::new("metadata", detail),
+                );
+                if error.auth
+                    && cfg.cookies_file.is_some()
                     && time::Instant::now() < deadline
                     && (retryable_output(dir, cfg.max_media_bytes) || video_has_files)
                 {
@@ -150,11 +200,14 @@ pub(crate) async fn download_with_timeout(
                     if request_cookie_refresh(cfg, "twitter", deadline, &mut refresh_events).await {
                         if time::Instant::now() >= deadline {
                             twitter_events.append(&mut refresh_events);
-                            trace_event(&mut twitter_events,
-                                FailureDiagnostic::new("retry", "Timed out"));
+                            trace_event(
+                                &mut twitter_events,
+                                FailureDiagnostic::new("retry", "Timed out"),
+                            );
                             None
                         } else {
-                            let remaining = deadline.saturating_duration_since(time::Instant::now());
+                            let remaining =
+                                deadline.saturating_duration_since(time::Instant::now());
                             match extract_twitter_images(url, cfg, dir, remaining).await {
                                 Ok(recovered) => {
                                     twitter_failed = false;
@@ -169,8 +222,10 @@ pub(crate) async fn download_with_timeout(
                                     } else {
                                         "Photo metadata failed"
                                     };
-                                    trace_event(&mut twitter_events,
-                                        FailureDiagnostic::new("metadata", detail));
+                                    trace_event(
+                                        &mut twitter_events,
+                                        FailureDiagnostic::new("metadata", detail),
+                                    );
                                     None
                                 }
                             }
@@ -186,9 +241,15 @@ pub(crate) async fn download_with_timeout(
         };
         (photos, Some(video))
     } else if source == Some("tiktok") {
-        (Some(tiktok_metadata_with_refresh(url, cfg, dir, deadline).await?), None)
+        (
+            Some(tiktok_metadata_with_refresh(url, cfg, dir, deadline).await?),
+            None,
+        )
     } else if let Some(source @ ("pinterest" | "instagram")) = source {
-        (Some(images_metadata_with_refresh(url, cfg, source, dir, deadline).await?), None)
+        (
+            Some(images_metadata_with_refresh(url, cfg, source, dir, deadline).await?),
+            None,
+        )
     } else {
         (None, None)
     };
@@ -196,16 +257,38 @@ pub(crate) async fn download_with_timeout(
     let mut result = if metadata.as_ref().is_none_or(|data| data.has_video) {
         let video = match video_result {
             Some(video) => video,
-            None => download_videos(url, cfg, dir, deadline.saturating_duration_since(time::Instant::now())).await,
+            None => {
+                download_videos(
+                    url,
+                    cfg,
+                    dir,
+                    deadline.saturating_duration_since(time::Instant::now()),
+                )
+                .await
+            }
         };
         match video {
             Ok(result) => result,
-            Err(error) if source == Some("twitter") && metadata.as_ref().is_some_and(|data| !data.images.is_empty()) => {
-                DownloadResult { selection: Selection { files: Vec::new(), skipped: 0, size_skipped: 0 },
-                    process_ok: false, limited: false, twitter_photos_failed: false,
+            Err(error)
+                if source == Some("twitter")
+                    && metadata
+                        .as_ref()
+                        .is_some_and(|data| !data.images.is_empty()) =>
+            {
+                DownloadResult {
+                    selection: Selection {
+                        files: Vec::new(),
+                        skipped: 0,
+                        size_skipped: 0,
+                    },
+                    process_ok: false,
+                    limited: false,
+                    twitter_photos_failed: false,
                     diagnostic: Some(error.diagnostic),
-                    description: None, file_descriptions: Vec::new(),
-                    events: error.events }
+                    description: None,
+                    file_descriptions: Vec::new(),
+                    events: error.events,
+                }
             }
             Err(mut error) => {
                 if twitter_failed {
@@ -216,18 +299,39 @@ pub(crate) async fn download_with_timeout(
         }
     } else {
         DownloadResult {
-            selection: Selection { files: Vec::new(), skipped: 0, size_skipped: 0 },
-            process_ok: true, limited: false, twitter_photos_failed: false, diagnostic: None,
-            description: None, file_descriptions: Vec::new(),
+            selection: Selection {
+                files: Vec::new(),
+                skipped: 0,
+                size_skipped: 0,
+            },
+            process_ok: true,
+            limited: false,
+            twitter_photos_failed: false,
+            diagnostic: None,
+            description: None,
+            file_descriptions: Vec::new(),
             events: Vec::new(),
         }
     };
     if let Some(metadata) = metadata {
         result.description = metadata.description;
         result.selection.skipped += metadata.skipped;
-        let max_images = if source == Some("tiktok") { MAX_TIKTOK_PHOTOS } else { MAX_FILES };
-        if let Err(failures) = add_images(&metadata.images, &metadata.alternates, cfg, dir,
-            &manifest, max_images, &mut result.selection, deadline).await
+        let max_images = if source == Some("tiktok") {
+            MAX_TIKTOK_PHOTOS
+        } else {
+            MAX_FILES
+        };
+        if let Err(failures) = add_images(
+            &metadata.images,
+            &metadata.alternates,
+            cfg,
+            dir,
+            &manifest,
+            max_images,
+            &mut result.selection,
+            deadline,
+        )
+        .await
         {
             result.process_ok = false;
             for diagnostic in failures {
@@ -239,17 +343,20 @@ pub(crate) async fn download_with_timeout(
     if twitter_failed {
         result.process_ok = false;
         result.events.extend(twitter_events);
-        let photo = photo_diagnostic.unwrap_or_else(|| {
-            FailureDiagnostic::new("metadata", "Photo metadata failed")
-        });
+        let photo = photo_diagnostic
+            .unwrap_or_else(|| FailureDiagnostic::new("metadata", "Photo metadata failed"));
         if result.diagnostic.is_none()
-            || result.diagnostic.is_some_and(|diagnostic| diagnostic.stage == "yt-dlp"
-                && diagnostic.detail == "Download failed")
+            || result.diagnostic.is_some_and(|diagnostic| {
+                diagnostic.stage == "yt-dlp" && diagnostic.detail == "Download failed"
+            })
         {
             result.diagnostic = Some(photo);
         }
         if result.events.iter().all(|event| event.stage != "metadata") {
-            trace_event(&mut result.events, FailureDiagnostic::new("metadata", "Photo metadata failed"));
+            trace_event(
+                &mut result.events,
+                FailureDiagnostic::new("metadata", "Photo metadata failed"),
+            );
         }
     }
     result.twitter_photos_failed = twitter_failed;
@@ -269,9 +376,12 @@ pub(crate) fn retryable_output(dir: &Path, max_bytes: u64) -> bool {
 
 pub(crate) fn clear_failed_attempt(dir: &Path) -> Result<(), String> {
     // The previous yt-dlp process has exited; only incomplete outputs remain.
-    for entry in fs::read_dir(dir).map_err(|_| "Ошибка очистки загрузки".to_string())? {
+    for entry in fs::read_dir(dir).map_err(|_| "Ошибка очистки загрузки".to_string())?
+    {
         let entry = entry.map_err(|_| "Ошибка очистки загрузки".to_string())?;
-        let kind = entry.file_type().map_err(|_| "Ошибка очистки загрузки".to_string())?;
+        let kind = entry
+            .file_type()
+            .map_err(|_| "Ошибка очистки загрузки".to_string())?;
         if kind.is_file() || kind.is_symlink() {
             fs::remove_file(entry.path()).map_err(|_| "Ошибка очистки загрузки".to_string())?;
         }

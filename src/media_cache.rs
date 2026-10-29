@@ -149,7 +149,9 @@ pub(crate) async fn invalidate_cache(
 fn valid_file_id(file_id: &str) -> bool {
     !file_id.is_empty()
         && file_id.len() <= MAX_FILE_ID_BYTES
-        && !file_id.chars().any(|ch| ch.is_whitespace() || ch.is_control())
+        && !file_id
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
 }
 
 fn description_prefix(description: &str) -> &str {
@@ -164,11 +166,15 @@ fn description_prefix(description: &str) -> &str {
 }
 
 fn serialize_items(items: &[CachedMedia]) -> Result<String, sqlx::Error> {
-    let capacity = 2 + items.iter().map(|item| {
-        64 + item.file_id.len() + item.description.as_ref().map_or(4, |description| {
-            description.len().min(MAX_DESCRIPTION_UTF16 * 4)
+    let capacity = 2 + items
+        .iter()
+        .map(|item| {
+            64 + item.file_id.len()
+                + item.description.as_ref().map_or(4, |description| {
+                    description.len().min(MAX_DESCRIPTION_UTF16 * 4)
+                })
         })
-    }).sum::<usize>();
+        .sum::<usize>();
     let mut json = Vec::with_capacity(capacity);
     json.push(b'[');
     for (index, item) in items.iter().enumerate() {
@@ -226,7 +232,10 @@ fn parse_items(json: &str) -> Option<Vec<CachedMedia>> {
         let description = match object.remove("description")? {
             Value::Null => None,
             Value::String(description) => {
-                if description.encode_utf16().take(MAX_DESCRIPTION_UTF16 + 1).count()
+                if description
+                    .encode_utf16()
+                    .take(MAX_DESCRIPTION_UTF16 + 1)
+                    .count()
                     > MAX_DESCRIPTION_UTF16
                 {
                     return None;
@@ -235,7 +244,11 @@ fn parse_items(json: &str) -> Option<Vec<CachedMedia>> {
             }
             _ => return None,
         };
-        items.push(CachedMedia { kind, file_id, description });
+        items.push(CachedMedia {
+            kind,
+            file_id,
+            description,
+        });
     }
     Some(items)
 }

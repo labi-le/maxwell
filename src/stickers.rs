@@ -40,10 +40,26 @@ pub(crate) struct StickerRule {
 }
 
 pub(crate) const RULES: &[StickerRule] = &[
-    StickerRule { unique_id: PIZDA, words: &["да"], max_words: Some(3) },
-    StickerRule { unique_id: PIDORA_OTVET, words: &["нет"], max_words: Some(3) },
-    StickerRule { unique_id: TRACTORIST, words: &["300", "триста"], max_words: None },
-    StickerRule { unique_id: BARANKI_GNU, words: &["ну"], max_words: Some(1) },
+    StickerRule {
+        unique_id: PIZDA,
+        words: &["да"],
+        max_words: Some(3),
+    },
+    StickerRule {
+        unique_id: PIDORA_OTVET,
+        words: &["нет"],
+        max_words: Some(3),
+    },
+    StickerRule {
+        unique_id: TRACTORIST,
+        words: &["300", "триста"],
+        max_words: None,
+    },
+    StickerRule {
+        unique_id: BARANKI_GNU,
+        words: &["ну"],
+        max_words: Some(1),
+    },
     StickerRule {
         unique_id: MOLODCY,
         words: &["молодец", "молодца", "молодцом", "молодцы", "молодчина"],
@@ -51,30 +67,89 @@ pub(crate) const RULES: &[StickerRule] = &[
     },
     StickerRule {
         unique_id: GRUSTNO_VEZDE,
-        words: &["груст*", "загруст*", "взгруст*", "депрес*", "депрешн*", "печал*", "тоска", "тоски",
-            "тоску", "тоской", "тосковать", "тоскую", "тоскует", "тоскуют", "тосклив*",
-            "уныл*", "уныни*", "уныва*", "хандра", "расстро*", "подавлен*", "поник*",
-            "тлен", "паршив*", "одинок*"],
+        words: &[
+            "груст*",
+            "загруст*",
+            "взгруст*",
+            "депрес*",
+            "депрешн*",
+            "печал*",
+            "тоска",
+            "тоски",
+            "тоску",
+            "тоской",
+            "тосковать",
+            "тоскую",
+            "тоскует",
+            "тоскуют",
+            "тосклив*",
+            "уныл*",
+            "уныни*",
+            "уныва*",
+            "хандра",
+            "расстро*",
+            "подавлен*",
+            "поник*",
+            "тлен",
+            "паршив*",
+            "одинок*",
+        ],
         max_words: None,
     },
 ];
 
 const AFFIRMATIVE_CONTINUATIONS: &[&str] = &[
-    "да", "конечно", "точно", "верно", "согласен", "согласна", "ага", "угу", "есть",
-    "будет", "можно", "хорошо", "ладно", "это", "так", "вот", "бля", "я", "мы", "ты",
-    "он", "она", "они",
+    "да",
+    "конечно",
+    "точно",
+    "верно",
+    "согласен",
+    "согласна",
+    "ага",
+    "угу",
+    "есть",
+    "будет",
+    "можно",
+    "хорошо",
+    "ладно",
+    "это",
+    "так",
+    "вот",
+    "бля",
+    "я",
+    "мы",
+    "ты",
+    "он",
+    "она",
+    "они",
 ];
 
 const NEGATIVE_CONTINUATIONS: &[&str] = &[
-    "нет", "не", "спасибо", "конечно", "точно", "верно", "хочу", "буду", "надо", "стоит",
-    "уж", "я", "мы", "ты", "он", "она", "они",
+    "нет",
+    "не",
+    "спасибо",
+    "конечно",
+    "точно",
+    "верно",
+    "хочу",
+    "буду",
+    "надо",
+    "стоит",
+    "уж",
+    "я",
+    "мы",
+    "ты",
+    "он",
+    "она",
+    "они",
 ];
 
 /// A short answer only counts when the trigger starts the message and the
 /// remaining words are known answer fillers. This keeps "да я ебу" and
 /// "нет я ебу" from matching as plain yes/no.
 fn short_answer_matches(text: &str, trigger: &str, max_words: usize) -> bool {
-    let words: Vec<String> = text.split(|ch: char| !ch.is_alphanumeric())
+    let words: Vec<String> = text
+        .split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
         .collect();
@@ -97,8 +172,12 @@ fn short_answer_matches(text: &str, trigger: &str, max_words: usize) -> bool {
         "нет" => NEGATIVE_CONTINUATIONS,
         _ => return words.len() == 1,
     };
-    words.iter().enumerate()
-        .filter(|(position, _)| *position != index && !(trigger == "да" && index == 1 && *position == 0))
+    words
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| {
+            *position != index && !(trigger == "да" && index == 1 && *position == 0)
+        })
         .all(|(_, word)| allowed.contains(&word.as_str()))
 }
 
@@ -116,8 +195,14 @@ fn contains_phrase(text: &str, phrase: &str) -> bool {
     let text = text.to_lowercase();
     text.match_indices(phrase).any(|(start, _)| {
         let end = start + phrase.len();
-        let before = text[..start].chars().next_back().is_none_or(|ch| !ch.is_alphanumeric());
-        let after = text[end..].chars().next().is_none_or(|ch| !ch.is_alphanumeric());
+        let before = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !ch.is_alphanumeric());
+        let after = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_alphanumeric());
         before && after
     })
 }
@@ -129,7 +214,8 @@ fn word_count(text: &str) -> usize {
 }
 
 pub(crate) fn sticker_rule(text: &str) -> Option<&'static str> {
-    if let Some((_, unique_id)) = PHRASES.iter()
+    if let Some((_, unique_id)) = PHRASES
+        .iter()
         .find(|(phrase, _)| contains_phrase(text, phrase))
     {
         return Some(*unique_id);
@@ -139,7 +225,8 @@ pub(crate) fn sticker_rule(text: &str) -> Option<&'static str> {
         .filter(|word| !word.is_empty())
         .find_map(|word| {
             let word = word.to_lowercase();
-            RULES.iter()
+            RULES
+                .iter()
                 .find(|rule| {
                     let limit_ok = rule.max_words.is_none_or(|limit| words <= limit);
                     let answer_ok = rule.max_words.is_none_or(|limit| {
@@ -151,8 +238,12 @@ pub(crate) fn sticker_rule(text: &str) -> Option<&'static str> {
                         };
                         short_answer_matches(text, trigger, limit)
                     });
-                    limit_ok && answer_ok
-                        && rule.words.iter().any(|trigger| trigger_matches(trigger, &word))
+                    limit_ok
+                        && answer_ok
+                        && rule
+                            .words
+                            .iter()
+                            .any(|trigger| trigger_matches(trigger, &word))
                 })
                 .map(|rule| rule.unique_id)
         })
@@ -168,9 +259,17 @@ impl StickerReplies {
 
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
-        Self(RULES.iter()
-            .map(|rule| (rule.unique_id, FileId(format!("sticker-{}", rule.unique_id))))
-            .collect())
+        Self(
+            RULES
+                .iter()
+                .map(|rule| {
+                    (
+                        rule.unique_id,
+                        FileId(format!("sticker-{}", rule.unique_id)),
+                    )
+                })
+                .collect(),
+        )
     }
 }
 
@@ -181,7 +280,8 @@ pub(crate) async fn load_sticker_replies(bot: &Bot) -> StickerReplies {
     };
     let mut replies = StickerReplies::default();
     for sticker in set.stickers {
-        if let Some(rule) = RULES.iter()
+        if let Some(rule) = RULES
+            .iter()
             .find(|rule| rule.unique_id == sticker.file.unique_id.0)
         {
             replies.0.insert(rule.unique_id, sticker.file.id);
@@ -232,7 +332,10 @@ impl StickerCatalog {
         if query.is_empty() {
             return self.entries.iter().take(limit).collect();
         }
-        let words: Vec<&str> = query.split_whitespace().filter(|word| word.chars().count() >= 2).collect();
+        let words: Vec<&str> = query
+            .split_whitespace()
+            .filter(|word| word.chars().count() >= 2)
+            .collect();
         let mut scored: Vec<(i32, &StickerEntry)> = Vec::new();
         for entry in &self.entries {
             let title = entry.set_title.to_lowercase();
@@ -241,7 +344,8 @@ impl StickerCatalog {
             let mut score = 0;
             let mut matched = 0;
             for word in &words {
-                let present = description.contains(word) || title.contains(word) || name.contains(word);
+                let present =
+                    description.contains(word) || title.contains(word) || name.contains(word);
                 if description.contains(word) {
                     score += 8;
                 }
@@ -261,7 +365,9 @@ impl StickerCatalog {
             if description.contains(query.as_str()) {
                 score += 6;
             }
-            if !entry.emoji.is_empty() && (query.contains(&entry.emoji) || entry.emoji.to_lowercase() == query) {
+            if !entry.emoji.is_empty()
+                && (query.contains(&entry.emoji) || entry.emoji.to_lowercase() == query)
+            {
                 score += 12;
             }
             if score > 0 {
@@ -269,7 +375,11 @@ impl StickerCatalog {
             }
         }
         scored.sort_by(|left, right| right.0.cmp(&left.0));
-        scored.into_iter().take(limit).map(|(_, entry)| entry).collect()
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, entry)| entry)
+            .collect()
     }
 
     pub(crate) fn pick(&self, query: &str) -> Option<FileId> {
@@ -304,14 +414,20 @@ impl StickerCatalog {
     #[cfg(test)]
     pub(crate) fn for_tests(entries: &[(&str, &str, &str, &str, &str)]) -> Self {
         Self {
-            entries: entries.iter().enumerate().map(|(offset, (file_id, set_name, set_title, emoji, description))| StickerEntry {
-                file_id: FileId((*file_id).to_owned()),
-                set_name: (*set_name).to_owned(),
-                set_title: (*set_title).to_owned(),
-                emoji: (*emoji).to_owned(),
-                index: offset as u32 + 1,
-                description: (*description).to_owned(),
-            }).collect(),
+            entries: entries
+                .iter()
+                .enumerate()
+                .map(
+                    |(offset, (file_id, set_name, set_title, emoji, description))| StickerEntry {
+                        file_id: FileId((*file_id).to_owned()),
+                        set_name: (*set_name).to_owned(),
+                        set_title: (*set_title).to_owned(),
+                        emoji: (*emoji).to_owned(),
+                        index: offset as u32 + 1,
+                        description: (*description).to_owned(),
+                    },
+                )
+                .collect(),
             sets: 1,
         }
     }
@@ -325,8 +441,13 @@ impl StickerEntry {
 
 pub(crate) async fn load_sticker_catalog(bot: &Bot) -> StickerCatalog {
     let path = env::var("STICKER_SETS_FILE").unwrap_or_else(|_| "sticker_sets.txt".into());
-    let mut names: Vec<String> = fs::read_to_string(path).unwrap_or_default()
-        .lines().map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
+    let mut names: Vec<String> = fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect();
     names.push(STICKER_SET.to_owned());
     names.sort();
     names.dedup();
@@ -356,23 +477,40 @@ pub(crate) async fn load_sticker_catalog(bot: &Bot) -> StickerCatalog {
         }
         time::sleep(Duration::from_millis(50)).await;
     }
-    let described = catalog.entries.iter().filter(|entry| !entry.description.is_empty()).count();
-    eprintln!("Sticker catalog: {} stickers from {} sets ({} described, {} packs unavailable)", catalog.entries.len(), catalog.sets, described, unavailable);
+    let described = catalog
+        .entries
+        .iter()
+        .filter(|entry| !entry.description.is_empty())
+        .count();
+    eprintln!(
+        "Sticker catalog: {} stickers from {} sets ({} described, {} packs unavailable)",
+        catalog.entries.len(),
+        catalog.sets,
+        described,
+        unavailable
+    );
     catalog
 }
 
 fn load_descriptions() -> std::collections::HashMap<String, String> {
-    let path = env::var("STICKER_DESCRIPTIONS_FILE").unwrap_or_else(|_| "sticker_descriptions.json".into());
+    let path = env::var("STICKER_DESCRIPTIONS_FILE")
+        .unwrap_or_else(|_| "sticker_descriptions.json".into());
     let text = fs::read_to_string(path).unwrap_or_default();
     let records: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
-    records.into_iter().filter_map(|record| {
-        let pack = record.get("pack")?.as_str()?;
-        let index = record.get("index")?.as_u64()?;
-        let description = record.get("description")?.as_str()?;
-        Some((format!("{pack}:{index}"), description.to_owned()))
-    }).collect()
+    records
+        .into_iter()
+        .filter_map(|record| {
+            let pack = record.get("pack")?.as_str()?;
+            let index = record.get("index")?.as_u64()?;
+            let description = record.get("description")?.as_str()?;
+            Some((format!("{pack}:{index}"), description.to_owned()))
+        })
+        .collect()
 }
 
 fn unix_nanos() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_nanos()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0)
 }

@@ -2,62 +2,127 @@ use crate::prelude::*;
 use crate::*;
 
 pub(crate) fn convertible_video(path: &Path) -> bool {
-    path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
-        ["webm", "mkv", "mov", "avi", "m4v", "3gp"].iter().any(|item| ext.eq_ignore_ascii_case(item))
-    })
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ["webm", "mkv", "mov", "avi", "m4v", "3gp"]
+                .iter()
+                .any(|item| ext.eq_ignore_ascii_case(item))
+        })
 }
 
 // Uppercase V excludes attached pictures, thumbnails and cover art.
-pub(crate) async fn video_dimensions(path: &Path, deadline: time::Instant, selector: &str)
-    -> Result<Option<(u32, u32)>, String>
-{
+pub(crate) async fn video_dimensions(
+    path: &Path,
+    deadline: time::Instant,
+    selector: &str,
+) -> Result<Option<(u32, u32)>, String> {
     let mut cmd = Command::new("ffprobe");
-    cmd.arg("-v").arg("error").arg("-select_streams").arg(selector)
-        .arg("-show_entries").arg("stream=width,height").arg("-of").arg("csv=p=0")
-        .arg(path).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    cmd.arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg(selector)
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
     #[cfg(unix)]
     cmd.as_std_mut().process_group(0);
-    let child = cmd.spawn().map_err(|_| "Не удалось запустить ffprobe".to_string())?;
+    let child = cmd
+        .spawn()
+        .map_err(|_| "Не удалось запустить ffprobe".to_string())?;
     let mut process = DownloadProcess::new(child);
     let mut output = Vec::new();
     let result = time::timeout_at(deadline, async {
-        process.child.as_mut().expect("child is owned").stdout.take()
-            .expect("ffprobe stdout is piped").take(128).read_to_end(&mut output).await?;
+        process
+            .child
+            .as_mut()
+            .expect("child is owned")
+            .stdout
+            .take()
+            .expect("ffprobe stdout is piped")
+            .take(128)
+            .read_to_end(&mut output)
+            .await?;
         process.wait().await
-    }).await;
+    })
+    .await;
     match result {
         Ok(Ok(status)) if status.success() => {
-            if output.is_empty() { return Ok(None); }
+            if output.is_empty() {
+                return Ok(None);
+            }
             let text = std::str::from_utf8(&output).map_err(|_| "Некорректные размеры видео")?;
-            let (width, height) = text.trim().split_once(',')
+            let (width, height) = text
+                .trim()
+                .split_once(',')
                 .ok_or("Некорректные размеры видео")?;
-            let width = width.parse::<u32>().map_err(|_| "Некорректные размеры видео")?;
-            let height = height.parse::<u32>().map_err(|_| "Некорректные размеры видео")?;
-            if width == 0 || height == 0 { return Err("Некорректные размеры видео".into()); }
+            let width = width
+                .parse::<u32>()
+                .map_err(|_| "Некорректные размеры видео")?;
+            let height = height
+                .parse::<u32>()
+                .map_err(|_| "Некорректные размеры видео")?;
+            if width == 0 || height == 0 {
+                return Err("Некорректные размеры видео".into());
+            }
             Ok(Some((width, height)))
         }
         _ => Err("Не удалось проверить видеопоток".into()),
     }
 }
 
-pub(crate) async fn require_video_audio(path: &Path, deadline: time::Instant) -> Result<(), String> {
+pub(crate) async fn require_video_audio(
+    path: &Path,
+    deadline: time::Instant,
+) -> Result<(), String> {
     let mut cmd = Command::new("ffprobe");
-    cmd.args(["-v", "error", "-select_streams", "a:0",
-        "-show_entries", "stream=index", "-of", "csv=p=0"])
-        .arg(path).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+    ])
+    .arg(path)
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null())
+    .kill_on_drop(true);
     #[cfg(unix)]
     cmd.as_std_mut().process_group(0);
-    let child = cmd.spawn().map_err(|_| "Не удалось запустить ffprobe".to_string())?;
+    let child = cmd
+        .spawn()
+        .map_err(|_| "Не удалось запустить ffprobe".to_string())?;
     let mut process = DownloadProcess::new(child);
     let mut output = Vec::new();
     let result = time::timeout_at(deadline, async {
-        process.child.as_mut().expect("child is owned").stdout.take()
-            .expect("ffprobe stdout is piped").take(128).read_to_end(&mut output).await?;
+        process
+            .child
+            .as_mut()
+            .expect("child is owned")
+            .stdout
+            .take()
+            .expect("ffprobe stdout is piped")
+            .take(128)
+            .read_to_end(&mut output)
+            .await?;
         process.wait().await
-    }).await;
+    })
+    .await;
     match result {
         Ok(Ok(status)) if status.success() => {
-            if std::str::from_utf8(&output).ok().and_then(|text| text.trim().parse::<u32>().ok()).is_some() {
+            if std::str::from_utf8(&output)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .is_some()
+            {
                 Ok(())
             } else {
                 Err("Видео без аудиодорожки не отправляется: в выбранном файле нет звука.".into())
@@ -68,7 +133,8 @@ pub(crate) async fn require_video_audio(path: &Path, deadline: time::Instant) ->
 }
 
 pub(crate) fn check_video_dimensions((width, height): (u32, u32)) -> Result<(), String> {
-    if width > MAX_VIDEO_DIMENSION || height > MAX_VIDEO_DIMENSION
+    if width > MAX_VIDEO_DIMENSION
+        || height > MAX_VIDEO_DIMENSION
         || width.saturating_mul(height) > MAX_VIDEO_PIXELS
     {
         return Err("Разрешение видео превышает допустимый предел".into());
@@ -76,13 +142,20 @@ pub(crate) fn check_video_dimensions((width, height): (u32, u32)) -> Result<(), 
     Ok(())
 }
 
-pub(crate) async fn convert_video(path: &Path, dimensions: (u32, u32), max_bytes: u64, deadline: time::Instant)
-    -> Result<tempfile::TempPath, String>
-{
+pub(crate) async fn convert_video(
+    path: &Path,
+    dimensions: (u32, u32),
+    max_bytes: u64,
+    deadline: time::Instant,
+) -> Result<tempfile::TempPath, String> {
     check_video_dimensions(dimensions)?;
     let parent = path.parent().ok_or("Не удалось подготовить конвертацию")?;
-    let output = tempfile::Builder::new().prefix("inline-").suffix(".mp4")
-        .tempfile_in(parent).map_err(|_| "Не удалось подготовить конвертацию")?.into_temp_path();
+    let output = tempfile::Builder::new()
+        .prefix("inline-")
+        .suffix(".mp4")
+        .tempfile_in(parent)
+        .map_err(|_| "Не удалось подготовить конвертацию")?
+        .into_temp_path();
     let output_path: &Path = output.as_ref();
     let mut cmd = Command::new("ffmpeg");
     cmd.arg("-nostdin").arg("-v").arg("error").arg("-y")
@@ -99,9 +172,14 @@ pub(crate) async fn convert_video(path: &Path, dimensions: (u32, u32), max_bytes
         .stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
     #[cfg(unix)]
     cmd.as_std_mut().process_group(0);
-    let child = cmd.spawn().map_err(|_| "Не удалось запустить ffmpeg".to_string())?;
+    let child = cmd
+        .spawn()
+        .map_err(|_| "Не удалось запустить ffmpeg".to_string())?;
     let mut process = DownloadProcess::new(child);
-    let mut interval = time::interval_at(time::Instant::now() + Duration::from_millis(300), Duration::from_millis(300));
+    let mut interval = time::interval_at(
+        time::Instant::now() + Duration::from_millis(300),
+        Duration::from_millis(300),
+    );
     loop {
         tokio::select! {
             result = process.wait() => {
@@ -118,7 +196,9 @@ pub(crate) async fn convert_video(path: &Path, dimensions: (u32, u32), max_bytes
             }
         }
     }
-    let size = fs::metadata(&output).map_err(|_| "Ошибка проверки размера видео")?.len();
+    let size = fs::metadata(&output)
+        .map_err(|_| "Ошибка проверки размера видео")?
+        .len();
     if size == 0 || size > max_bytes {
         return Err("Видео после конвертации пустое или превышает лимит размера".into());
     }

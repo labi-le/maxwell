@@ -4,13 +4,18 @@ use prelude::*;
 mod media_cache;
 mod user_errors;
 
-pub(crate) use media_cache::{cache_key, init_cache, invalidate_cache, lookup_cache, store_cache, CachedMedia};
+pub(crate) use media_cache::{
+    cache_key, init_cache, invalidate_cache, lookup_cache, store_cache, CachedMedia,
+};
 
 mod chat;
-mod memory;
-mod self_improve;
 pub(crate) use chat::*;
+mod tool_registry;
+pub(crate) use tool_registry::*;
+mod memory;
 pub(crate) use memory::*;
+mod code_inspect;
+mod self_improve;
 mod settings;
 pub(crate) use settings::*;
 mod cookies;
@@ -22,6 +27,7 @@ pub(crate) use diagnostics::*;
 mod links;
 pub(crate) use links::*;
 mod media;
+mod read_url;
 pub(crate) use media::*;
 mod process;
 pub(crate) use process::*;
@@ -60,6 +66,9 @@ const USER_DOWNLOAD_LIMIT: usize = 3;
 const TELEGRAM_FILE_LIMIT: u64 = 50_000_000;
 const DEFAULT_MEDIA_LIMIT: u64 = 45 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(180);
+// Long videos and live streams are rejected before download; the 180s
+// download budget is for normal clips, not hours-long broadcasts.
+pub(crate) const MAX_VIDEO_DURATION: u64 = 30 * 60;
 const TELEGRAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 const COOKIE_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 const YOUTUBE_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -69,8 +78,8 @@ const MP4_MUX_HEADROOM: u64 = 64 * 1024;
 const MAX_TWITTER_JSON_BYTES: u64 = 16 * 1024;
 const MAX_VIDEO_DIMENSION: u32 = 3840;
 const MAX_VIDEO_PIXELS: u32 = 3840 * 2160;
-const TIKTOK_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0";
-
+const TIKTOK_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0";
 
 fn telegram_bot(token: String) -> Result<Bot, reqwest::Error> {
     let client = teloxide::net::default_reqwest_settings()
@@ -119,11 +128,17 @@ async fn main() {
         *catalog_cfg.sticker_catalog.write().await = catalog;
     });
     tokio::spawn(memory_compactor(Arc::clone(&cfg)));
-    tokio::spawn(crate::self_improve::improvement_notifier(bot.clone(), Arc::clone(&cfg)));
+    tokio::spawn(crate::self_improve::improvement_notifier(
+        bot.clone(),
+        Arc::clone(&cfg),
+    ));
     let handler = teloxide::dptree::entry()
         .branch(teloxide::types::Update::filter_message().endpoint(message_endpoint))
         .branch(teloxide::types::Update::filter_callback_query().endpoint(callback_endpoint));
     teloxide::dispatching::Dispatcher::builder(bot, handler)
+        // Distribute by nothing (rather than chat id): a slow download in one
+        // chat must not serialize unrelated messages or conversations.
+        .distribution_function(|_| None::<i64>)
         .dependencies(teloxide::dptree::deps![cfg])
         .enable_ctrlc_handler()
         .build()
@@ -143,50 +158,53 @@ async fn callback_endpoint(
     handle_callback_query(bot, query, cfg).await
 }
 
-
-#[cfg(test)]
-mod test_support;
-#[cfg(test)]
-mod chat_test;
-#[cfg(test)]
-mod feature_support;
-#[cfg(test)]
-mod cookies_test;
-#[cfg(test)]
-mod links_test;
-#[cfg(test)]
-mod images_test;
-#[cfg(test)]
-mod image_fetch_test;
-#[cfg(test)]
-mod youtube_test;
 #[cfg(test)]
 mod caption_test;
 #[cfg(test)]
-mod video_convert_test;
+mod chat_test;
+#[cfg(test)]
+mod cookie_refresh_test;
+#[cfg(test)]
+mod cookies_test;
+#[cfg(test)]
+mod database_test;
+#[cfg(test)]
+mod delivery_test;
+#[cfg(test)]
+mod diagnostics_test;
+#[cfg(test)]
+mod download_test;
+#[cfg(test)]
+mod download_videos_test;
+#[cfg(test)]
+mod feature_support;
+#[cfg(test)]
+mod handler_test;
+#[cfg(test)]
+mod ignore_window_test;
+#[cfg(test)]
+mod image_fetch_test;
+#[cfg(test)]
+mod images_test;
+#[cfg(test)]
+mod links_test;
+#[cfg(test)]
+mod media_cache_test;
 #[cfg(test)]
 mod media_test;
 #[cfg(test)]
 mod process_test;
 #[cfg(test)]
-mod cookie_refresh_test;
+mod self_improve_test;
 #[cfg(test)]
 mod stickers_test;
 #[cfg(test)]
-mod self_improve_test;
+mod test_support;
 #[cfg(test)]
-mod download_test;
-#[cfg(test)]
-mod diagnostics_test;
+mod tool_registry_test;
 #[cfg(test)]
 mod user_errors_test;
 #[cfg(test)]
-mod database_test;
+mod video_convert_test;
 #[cfg(test)]
-mod handler_test;
-#[cfg(test)]
-mod delivery_test;
-#[cfg(test)]
-mod media_cache_test;
-#[cfg(test)]
-mod download_videos_test;
+mod youtube_test;

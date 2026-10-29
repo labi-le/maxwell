@@ -1,6 +1,6 @@
 use crate::prelude::*;
-use crate::*;
 use crate::test_support::*;
+use crate::*;
 
 use std::collections::VecDeque;
 
@@ -16,13 +16,18 @@ pub(crate) struct FeatureRequest {
 
 impl FeatureRequest {
     pub(crate) fn is_media(&self) -> bool {
-        matches!(self.method.as_str(), "sendmediagroup" | "sendphoto" | "sendvideo"
-            | "sendaudio" | "senddocument")
+        matches!(
+            self.method.as_str(),
+            "sendmediagroup" | "sendphoto" | "sendvideo" | "sendaudio" | "senddocument"
+        )
     }
 
     pub(crate) fn media(&self) -> Vec<Value> {
         if self.method == "sendmediagroup" {
-            return self.fields["media"].as_array().expect("album media array").clone();
+            return self.fields["media"]
+                .as_array()
+                .expect("album media array")
+                .clone();
         }
         let kind = match self.method.as_str() {
             "sendphoto" => "photo",
@@ -40,12 +45,19 @@ impl FeatureRequest {
 
     pub(crate) fn upload(&self, media: &Value) -> Option<&[u8]> {
         let name = media["media"].as_str()?.strip_prefix("attach://")?;
-        self.uploads.iter().find(|(field, _)| field == name).map(|(_, bytes)| bytes.as_slice())
+        self.uploads
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, bytes)| bytes.as_slice())
     }
 }
 
 pub(crate) enum FeatureReply {
-    Reject { code: u16, description: String, retry_after: Option<u32> },
+    Reject {
+        code: u16,
+        description: String,
+        retry_after: Option<u32>,
+    },
     Disconnect,
     InvalidResponse,
     MissingIds,
@@ -53,12 +65,19 @@ pub(crate) enum FeatureReply {
 
 impl FeatureReply {
     pub(crate) fn reject(description: &str) -> Self {
-        Self::Reject { code: 400, description: description.into(), retry_after: None }
+        Self::Reject {
+            code: 400,
+            description: description.into(),
+            retry_after: None,
+        }
     }
 
     pub(crate) fn rate_limit() -> Self {
-        Self::Reject { code: 429, description: "Too Many Requests: retry after 17".into(),
-            retry_after: Some(17) }
+        Self::Reject {
+            code: 429,
+            description: "Too Many Requests: retry after 17".into(),
+            retry_after: Some(17),
+        }
     }
 }
 
@@ -88,10 +107,16 @@ pub(crate) fn feature_find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
 
 pub(crate) async fn feature_read_more(stream: &mut tokio::net::TcpStream, bytes: &mut Vec<u8>) {
     let mut chunk = [0; 4096];
-    let count = stream.read(&mut chunk).await.expect("reading local Bot API request");
+    let count = stream
+        .read(&mut chunk)
+        .await
+        .expect("reading local Bot API request");
     assert_ne!(count, 0, "incomplete local Bot API request");
     bytes.extend_from_slice(&chunk[..count]);
-    assert!(bytes.len() <= 8 * 1024 * 1024, "fixture request exceeded bounded body size");
+    assert!(
+        bytes.len() <= 8 * 1024 * 1024,
+        "fixture request exceeded bounded body size"
+    );
 }
 
 pub(crate) fn feature_field(value: &[u8]) -> Value {
@@ -103,35 +128,52 @@ pub(crate) fn feature_field(value: &[u8]) -> Value {
 pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> FeatureRequest {
     let mut bytes = Vec::new();
     let header_end = loop {
-        if let Some(end) = feature_find(&bytes, b"\r\n\r\n") { break end + 4; }
+        if let Some(end) = feature_find(&bytes, b"\r\n\r\n") {
+            break end + 4;
+        }
         feature_read_more(stream, &mut bytes).await;
     };
     let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
-    let path = headers.split_whitespace().nth(1).expect("Bot API method path");
-    let header = |name: &str| headers.lines().find_map(|line| {
-        let (key, value) = line.split_once(':')?;
-        key.eq_ignore_ascii_case(name).then(|| value.trim())
-    });
+    let path = headers
+        .split_whitespace()
+        .nth(1)
+        .expect("Bot API method path");
+    let header = |name: &str| {
+        headers.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name).then(|| value.trim())
+        })
+    };
     let mut body = Vec::new();
     if header("transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
         let mut cursor = header_end;
         loop {
             let line_end = loop {
-                if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") { break cursor + end; }
+                if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") {
+                    break cursor + end;
+                }
                 feature_read_more(stream, &mut bytes).await;
             };
-            let size = std::str::from_utf8(&bytes[cursor..line_end]).unwrap()
-                .split(';').next().unwrap().trim();
+            let size = std::str::from_utf8(&bytes[cursor..line_end])
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .trim();
             let size = usize::from_str_radix(size, 16).expect("valid HTTP chunk size");
             cursor = line_end + 2;
             if size == 0 {
                 // Consume optional trailers rather than guessing a raw-body terminator.
                 loop {
                     let end = loop {
-                        if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") { break cursor + end; }
+                        if let Some(end) = feature_find(&bytes[cursor..], b"\r\n") {
+                            break cursor + end;
+                        }
                         feature_read_more(stream, &mut bytes).await;
                     };
-                    if end == cursor { break; }
+                    if end == cursor {
+                        break;
+                    }
                     cursor = end + 2;
                 }
                 break;
@@ -154,23 +196,35 @@ pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> 
     let mut fields = serde_json::json!({});
     let mut uploads = Vec::new();
     if content_type.starts_with("multipart/form-data") {
-        let boundary = content_type.split(';').find_map(|part| part.trim().strip_prefix("boundary="))
-            .expect("multipart boundary").trim_matches('"');
+        let boundary = content_type
+            .split(';')
+            .find_map(|part| part.trim().strip_prefix("boundary="))
+            .expect("multipart boundary")
+            .trim_matches('"');
         let delimiter = format!("--{boundary}");
         let next_delimiter = format!("\r\n{delimiter}");
         let mut cursor = feature_find(&body, delimiter.as_bytes()).unwrap() + delimiter.len();
         loop {
-            if body[cursor..].starts_with(b"--") { break; }
+            if body[cursor..].starts_with(b"--") {
+                break;
+            }
             assert!(body[cursor..].starts_with(b"\r\n"));
             cursor += 2;
             let end = cursor + feature_find(&body[cursor..], b"\r\n\r\n").unwrap();
             let part_headers = std::str::from_utf8(&body[cursor..end]).unwrap();
-            let disposition = part_headers.lines().find(|line| line.to_ascii_lowercase()
-                .starts_with("content-disposition:")).expect("multipart disposition");
-            let attribute = |name: &str| disposition.split(';').find_map(|part| {
-                let (key, value) = part.trim().split_once('=')?;
-                (key == name).then(|| value.trim_matches('"'))
-            });
+            let disposition = part_headers
+                .lines()
+                .find(|line| {
+                    line.to_ascii_lowercase()
+                        .starts_with("content-disposition:")
+                })
+                .expect("multipart disposition");
+            let attribute = |name: &str| {
+                disposition.split(';').find_map(|part| {
+                    let (key, value) = part.trim().split_once('=')?;
+                    (key == name).then(|| value.trim_matches('"'))
+                })
+            };
             let name = attribute("name").expect("multipart field name");
             cursor = end + 4;
             let end = cursor + feature_find(&body[cursor..], next_delimiter.as_bytes()).unwrap();
@@ -192,10 +246,19 @@ pub(crate) async fn feature_read_request(stream: &mut tokio::net::TcpStream) -> 
     } else if !body.is_empty() {
         fields = serde_json::from_slice(&body).expect("JSON Bot API body");
     }
-    FeatureRequest { method: path.rsplit('/').next().unwrap().to_ascii_lowercase(), fields, uploads }
+    FeatureRequest {
+        method: path.rsplit('/').next().unwrap().to_ascii_lowercase(),
+        fields,
+        uploads,
+    }
 }
 
-pub(crate) fn feature_message(chat: i64, ordinal: usize, kind: Option<&str>, file_id: &str) -> Value {
+pub(crate) fn feature_message(
+    chat: i64,
+    ordinal: usize,
+    kind: Option<&str>,
+    file_id: &str,
+) -> Value {
     let mut message = serde_json::json!({
         "message_id": 100 + ordinal, "date": 1700000000,
         "chat": { "id": chat, "type": if chat < 0 { "supergroup" } else { "private" } },
@@ -211,14 +274,20 @@ pub(crate) fn feature_message(chat: i64, ordinal: usize, kind: Option<&str>, fil
         },
     });
     if let Some(kind) = kind {
-        message[kind] = if kind == "photo" { serde_json::json!([file]) } else { file };
+        message[kind] = if kind == "photo" {
+            serde_json::json!([file])
+        } else {
+            file
+        };
     }
     message
 }
 
 impl FeatureApi {
     pub(crate) async fn new() -> Self {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let requests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let state = Arc::new(tokio::sync::Mutex::new(FeatureApiState::default()));
@@ -229,11 +298,20 @@ impl FeatureApi {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request = feature_read_request(&mut stream).await;
-                let chat = request.fields["chat_id"].as_i64().or_else(|| {
-                    request.fields["chat_id"].as_str().and_then(|value| value.parse().ok())
-                }).unwrap_or(1);
+                let chat = request.fields["chat_id"]
+                    .as_i64()
+                    .or_else(|| {
+                        request.fields["chat_id"]
+                            .as_str()
+                            .and_then(|value| value.parse().ok())
+                    })
+                    .unwrap_or(1);
                 let mut state = replies.lock().await;
-                let reply = if request.is_media() { state.replies.pop_front() } else { None };
+                let reply = if request.is_media() {
+                    state.replies.pop_front()
+                } else {
+                    None
+                };
                 let delete_fails = state.delete_fails;
                 drop(state);
                 let media = request.media();
@@ -284,23 +362,38 @@ impl FeatureApi {
                         serde_json::json!({"ok": true, "result": result})
                     }
                 };
-                let body = match response { Value::String(raw) => raw, response => response.to_string() };
+                let body = match response {
+                    Value::String(raw) => raw,
+                    response => response.to_string(),
+                };
                 let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
                 stream.write_all(headers.as_bytes()).await.unwrap();
                 stream.write_all(body.as_bytes()).await.unwrap();
             }
         });
-        Self { bot: Bot::new("123:features-token-one").set_api_url(url.clone()), url,
-            requests, state, server }
+        Self {
+            bot: Bot::new("123:features-token-one").set_api_url(url.clone()),
+            url,
+            requests,
+            state,
+            server,
+        }
     }
 
-    pub(crate) async fn snapshot(&self) -> Vec<FeatureRequest> { self.requests.lock().await.clone() }
-    pub(crate) async fn clear(&self) { self.requests.lock().await.clear(); }
-    pub(crate) async fn reject_next(&self, reply: FeatureReply) { self.state.lock().await.replies.push_back(reply); }
+    pub(crate) async fn snapshot(&self) -> Vec<FeatureRequest> {
+        self.requests.lock().await.clone()
+    }
+    pub(crate) async fn clear(&self) {
+        self.requests.lock().await.clear();
+    }
+    pub(crate) async fn reject_next(&self, reply: FeatureReply) {
+        self.state.lock().await.replies.push_back(reply);
+    }
 }
 
 pub(crate) fn feature_script(root: &Path, extensions: &[&str], tail: &str) -> String {
-    let mut script = format!(r#"#!/bin/sh
+    let mut script = format!(
+        r#"#!/bin/sh
 # CUSTOM_METADATA
 printf 'call\n' >> '{}/calls'
 for arg in "$@"; do
@@ -316,15 +409,22 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-"#, root.display());
+"#,
+        root.display()
+    );
     for (index, extension) in extensions.iter().enumerate() {
         // Reverse lexical filenames to expose any sorting of publication order.
         let name = format!("asset-{:02}.{extension}", extensions.len() - index);
         let description = serde_json::to_string(&format!("Post {index} & <source>")).unwrap();
         if *extension == "mp4" {
-            script.push_str(&format!("cp '{}' \"$dir/{name}\"\n", av_fixture().display()));
+            script.push_str(&format!(
+                "cp '{}' \"$dir/{name}\"\n",
+                av_fixture().display()
+            ));
         } else {
-            script.push_str(&format!("printf '%s' 'asset-{index:02}' > \"$dir/{name}\"\n"));
+            script.push_str(&format!(
+                "printf '%s' 'asset-{index:02}' > \"$dir/{name}\"\n"
+            ));
         }
         script.push_str(&format!("printf '%s\\n' \"$dir/{name}\" >> \"$manifest\"\nprintf '\"%s\"\\t\"\"\\t%s\\n' \"$dir/{name}\" '{description}'\n"));
     }
@@ -342,13 +442,21 @@ pub(crate) struct FeatureFixture {
 impl FeatureFixture {
     pub(crate) async fn new(extensions: &[&str], tail: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let mut cfg = fake_settings(root.path(), &feature_script(root.path(), extensions, tail)).await;
+        let mut cfg =
+            fake_settings(root.path(), &feature_script(root.path(), extensions, tail)).await;
         cfg.max_media_bytes = 1_000_000;
-        Self { root, cfg: Arc::new(cfg), api: FeatureApi::new().await }
+        Self {
+            root,
+            cfg: Arc::new(cfg),
+            api: FeatureApi::new().await,
+        }
     }
 
     pub(crate) fn calls(&self) -> usize {
-        fs::read_to_string(self.root.path().join("calls")).unwrap_or_default().lines().count()
+        fs::read_to_string(self.root.path().join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .count()
     }
 
     pub(crate) async fn send(&self, chat: i64, sender: u64, name: &str, url: &str) {
@@ -362,9 +470,15 @@ impl FeatureFixture {
             "from": { "id": sender, "is_bot": false, "first_name": name,
                 "last_name": "Never use surname", "username": "never_mention_username" },
             "text": text,
-        })).unwrap();
-        time::timeout(Duration::from_secs(5), handle_message(self.api.bot.clone(), message,
-            Arc::clone(&self.cfg))).await.expect("feature handler stalled").unwrap();
+        }))
+        .unwrap();
+        time::timeout(
+            Duration::from_secs(5),
+            handle_message(self.api.bot.clone(), message, Arc::clone(&self.cfg)),
+        )
+        .await
+        .expect("feature handler stalled")
+        .unwrap();
     }
 
     pub(crate) async fn warm(&self) {
@@ -372,62 +486,126 @@ impl FeatureFixture {
         let before = self.calls();
         self.api.clear().await;
         self.send(1, 1, "Second", LINK).await;
-        assert_eq!(self.calls(), before, "a warm same-chat publication must bypass yt-dlp");
+        assert_eq!(
+            self.calls(),
+            before,
+            "a warm same-chat publication must bypass yt-dlp"
+        );
         let requests = self.api.snapshot().await;
-        let media: Vec<_> = requests.iter().filter(|request| request.is_media()).collect();
-        assert!(!media.is_empty(), "warm publication must still be delivered");
-        assert!(media.iter().all(|request| request.uploads.is_empty()),
-            "warm publication must use Telegram file_ids, not binary uploads");
+        let media: Vec<_> = requests
+            .iter()
+            .filter(|request| request.is_media())
+            .collect();
+        assert!(
+            !media.is_empty(),
+            "warm publication must still be delivered"
+        );
+        assert!(
+            media.iter().all(|request| request.uploads.is_empty()),
+            "warm publication must use Telegram file_ids, not binary uploads"
+        );
     }
 }
 
 pub(crate) fn feature_silent(requests: &[FeatureRequest]) {
-    for request in requests.iter().filter(|request| request.is_media() || request.method == "sendmessage") {
-        assert_eq!(request.fields["disable_notification"], true,
-            "{} must remain silent", request.method);
+    for request in requests
+        .iter()
+        .filter(|request| request.is_media() || request.method == "sendmessage")
+    {
+        assert_eq!(
+            request.fields["disable_notification"], true,
+            "{} must remain silent",
+            request.method
+        );
     }
 }
 
 pub(crate) fn feature_retained(requests: &[FeatureRequest]) {
-    assert!(!requests.iter().any(|request| request.method == "deletemessage"),
-        "failed or incomplete delivery must retain the source message");
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.method == "deletemessage"),
+        "failed or incomplete delivery must retain the source message"
+    );
 }
 
 pub(crate) fn feature_reason(requests: &[FeatureRequest], keywords: &[&str]) -> String {
-    let messages: Vec<_> = requests.iter().filter(|request| request.method == "sendmessage")
-        .map(|request| request.fields["text"].as_str().unwrap()).collect();
-    assert_eq!(messages.len(), 1, "one actionable failure reason is expected");
+    let messages: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "sendmessage")
+        .map(|request| request.fields["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        messages.len(),
+        1,
+        "one actionable failure reason is expected"
+    );
     let reason = messages[0].to_lowercase();
-    assert!(keywords.iter().any(|keyword| reason.contains(keyword)),
-        "specific cause {:?} absent from user reason: {}", keywords, messages[0]);
-    for secret in [SECRET, "https://evil.invalid", "cookie: ", "bot_token=", "features-token-one"] {
-        assert!(!reason.contains(secret), "untrusted diagnostics leaked to chat: {reason}");
+    assert!(
+        keywords.iter().any(|keyword| reason.contains(keyword)),
+        "specific cause {:?} absent from user reason: {}",
+        keywords,
+        messages[0]
+    );
+    for secret in [
+        SECRET,
+        "https://evil.invalid",
+        "cookie: ",
+        "bot_token=",
+        "features-token-one",
+    ] {
+        assert!(
+            !reason.contains(secret),
+            "untrusted diagnostics leaked to chat: {reason}"
+        );
     }
     feature_silent(requests);
     reason
 }
 
 pub(crate) async fn feature_journal_is_safe(pool: &SqlitePool) {
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT url_host, url_path, stage, detail FROM download_failures"
-    ).fetch_all(pool).await.unwrap();
-    assert!(!rows.is_empty(), "failure must remain available to owner diagnostics");
-    let events: Vec<(String, String)> = sqlx::query_as(
-        "SELECT stage, detail FROM download_failure_events"
-    ).fetch_all(pool).await.unwrap();
-    for field in rows.iter().flat_map(|(host, path, stage, detail)| [host, path, stage, detail])
+    let rows: Vec<(String, String, String, String)> =
+        sqlx::query_as("SELECT url_host, url_path, stage, detail FROM download_failures")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "failure must remain available to owner diagnostics"
+    );
+    let events: Vec<(String, String)> =
+        sqlx::query_as("SELECT stage, detail FROM download_failure_events")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    for field in rows
+        .iter()
+        .flat_map(|(host, path, stage, detail)| [host, path, stage, detail])
         .chain(events.iter().flat_map(|(stage, detail)| [stage, detail]))
     {
-        for secret in [SECRET, "evil.invalid", "Cookie:", "BOT_TOKEN=", "?list=", "features-token-one"] {
-            assert!(!field.contains(secret), "untrusted diagnostic leaked to SQLite: {field}");
+        for secret in [
+            SECRET,
+            "evil.invalid",
+            "Cookie:",
+            "BOT_TOKEN=",
+            "?list=",
+            "features-token-one",
+        ] {
+            assert!(
+                !field.contains(secret),
+                "untrusted diagnostic leaked to SQLite: {field}"
+            );
         }
     }
 }
 
 pub(crate) async fn feature_journal_cause(pool: &SqlitePool, keywords: &[&str]) {
     let details: Vec<String> = sqlx::query_scalar(
-        "SELECT detail FROM download_failures UNION ALL SELECT detail FROM download_failure_events"
-    ).fetch_all(pool).await.unwrap();
+        "SELECT detail FROM download_failures UNION ALL SELECT detail FROM download_failure_events",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
     assert!(details.iter().any(|detail| keywords.iter().any(|keyword|
         detail.to_lowercase().contains(keyword))),
         "owner journal must keep the specific safe cause {:?}, not a generic delivery failure: {:?}",
