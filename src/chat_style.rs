@@ -249,6 +249,17 @@ pub(crate) fn style_reply(text: &str) -> String {
         .join(" ")
 }
 
+pub(crate) fn is_pass_reply(text: &str) -> bool {
+    let trimmed = text
+        .trim()
+        .trim_matches(|ch: char| !ch.is_alphanumeric())
+        .to_lowercase();
+    matches!(
+        trimmed.as_str(),
+        "pass" | "пас" | "молчу" | "пропуск" | "skip"
+    )
+}
+
 fn shorten(text: &str, max_chars: usize) -> &str {
     if text.chars().count() <= max_chars {
         return text;

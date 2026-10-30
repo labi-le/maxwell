@@ -841,6 +841,7 @@ macro_rules! chat_reply {
                 owner: $owner,
                 prompt: $prompt,
                 image: $image,
+                followup: false,
             },
             None,
         )
@@ -862,6 +863,7 @@ macro_rules! chat_reply_with_proposal {
                 owner: $owner,
                 prompt: $prompt,
                 image: $image,
+                followup: false,
             },
             $proposal,
         )

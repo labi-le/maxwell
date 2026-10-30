@@ -50,10 +50,7 @@ async fn sticker_replies_match_standalone_yes_no_only_where_messages_are_accepte
     let requests = fixture.api.snapshot().await;
     assert_eq!(sticker(&requests), [format!("sticker-{PIDORA_OTVET}")]);
     assert_eq!(requests[0].fields["disable_notification"], true);
-    assert!(
-        requests[0].fields.get("reply_parameters").is_none(),
-        "group stickers must not ping the owner"
-    );
+    assert_eq!(requests[0].fields["reply_parameters"]["message_id"], 73);
     fixture.api.clear().await;
     fixture
         .send_text(1, 1, "Owner", &format!("да {LINK}"))
@@ -848,6 +845,107 @@ async fn sticker_only_reply_keeps_the_decision_buttons() {
     assert_eq!(
         messages[0].fields["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
         "approve:plan-1"
+    );
+    llm.task.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn group_chat_replies_with_reply_parameters_and_continues_dialogue_until_pass() {
+    let root = tempfile::tempdir().unwrap();
+    let mut settings = crate::test_support::fake_settings(root.path(), "#!/bin/sh\n").await;
+    let group = ChatId(-100555);
+    set_group_enabled(&settings.database, group, true)
+        .await
+        .unwrap();
+    let api = FeatureApi::new().await;
+    let llm = crate::test_support::mock_server(vec![
+        handler_text_response("какаю, но мысли о тебе не отпускают"),
+        handler_text_response("ну а хули ты хотел"),
+        handler_text_response("PASS"),
+    ])
+    .await;
+    settings.chat = Some(ChatConfig::new(
+        llm.url.clone(),
+        "secret".into(),
+        "model".into(),
+        llm.url.clone(),
+        SearchProvider::DuckDuckGo,
+        None,
+    ));
+    let cfg = Arc::new(settings);
+    let group_message = |id: i32, sender: u64, text: &str| -> Message {
+        serde_json::from_value(serde_json::json!({
+            "message_id": id,
+            "date": 1700000000,
+            "chat": {"id": group.0, "type": "supergroup"},
+            "from": {"id": sender, "is_bot": false, "first_name": "Denis"},
+            "text": text,
+        }))
+        .unwrap()
+    };
+
+    handle_message(
+        api.bot.clone(),
+        group_message(101, 1, "максут какаешь?"),
+        Arc::clone(&cfg),
+    )
+    .await
+    .unwrap();
+    let first: Vec<_> = api
+        .snapshot()
+        .await
+        .into_iter()
+        .filter(|request| request.method == "sendmessage")
+        .collect();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        first[0].fields["text"],
+        "какаю, но мысли о тебе не отпускают"
+    );
+    assert_eq!(first[0].fields["reply_parameters"]["message_id"], 101);
+    api.clear().await;
+
+    handle_message(
+        api.bot.clone(),
+        group_message(102, 2, "о чём вы вообще"),
+        Arc::clone(&cfg),
+    )
+    .await
+    .unwrap();
+    assert!(
+        api.snapshot().await.is_empty(),
+        "unaddressed message from another participant must not trigger follow-up"
+    );
+
+    handle_message(
+        api.bot.clone(),
+        group_message(103, 1, "романтично пиздец"),
+        Arc::clone(&cfg),
+    )
+    .await
+    .unwrap();
+    let second: Vec<_> = api
+        .snapshot()
+        .await
+        .into_iter()
+        .filter(|request| request.method == "sendmessage")
+        .collect();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].fields["text"], "ну а хули ты хотел");
+    assert_eq!(second[0].fields["reply_parameters"]["message_id"], 103);
+    api.clear().await;
+
+    handle_message(
+        api.bot.clone(),
+        group_message(104, 1, "ладно пойду чай налью"),
+        Arc::clone(&cfg),
+    )
+    .await
+    .unwrap();
+    assert!(
+        api.snapshot().await.is_empty(),
+        "PASS in follow-up mode must stay completely silent without typing or sendmessage"
     );
     llm.task.abort();
 }

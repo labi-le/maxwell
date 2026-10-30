@@ -44,6 +44,8 @@ const SYSTEM_PROMPT: &str = "\
 
 const CHAT_TIMEOUT: Duration = Duration::from_secs(40);
 const CHAT_COOLDOWN: Duration = Duration::from_secs(3);
+pub(crate) const FOLLOWUP_WINDOW: Duration = Duration::from_secs(75);
+const MAX_ACTIVE_CHATS: usize = 1024;
 const CHAT_CONCURRENCY: usize = 4;
 const MAX_LLM_BYTES: usize = 64 * 1024;
 
@@ -65,6 +67,7 @@ pub(crate) struct ChatConfig {
     requests: Arc<Semaphore>,
     last_reply: Arc<Mutex<HashMap<UserId, time::Instant>>>,
     pub(crate) last_research: Arc<Mutex<HashMap<UserId, time::Instant>>>,
+    last_active: Arc<Mutex<HashMap<ChatId, (UserId, time::Instant)>>>,
     pub(crate) research_cooldown: Duration,
     pub(crate) code_dir: PathBuf,
 }
@@ -108,6 +111,7 @@ impl ChatConfig {
             requests: Arc::new(Semaphore::new(CHAT_CONCURRENCY)),
             last_reply: Arc::new(Mutex::new(HashMap::new())),
             last_research: Arc::new(Mutex::new(HashMap::new())),
+            last_active: Arc::new(Mutex::new(HashMap::new())),
             research_cooldown: crate::research::RESEARCH_COOLDOWN,
             code_dir: env::var("CODE_DIR")
                 .map(PathBuf::from)
@@ -144,6 +148,39 @@ impl ChatConfig {
                 return;
             }
             time::sleep(wait).await;
+        }
+    }
+
+    pub(crate) async fn note_reply(&self, chat_id: ChatId, user_id: UserId) {
+        let mut active = self.last_active.lock().await;
+        let now = time::Instant::now();
+        if active.len() >= MAX_ACTIVE_CHATS && !active.contains_key(&chat_id) {
+            active.retain(|_, (_, at)| now.duration_since(*at) < FOLLOWUP_WINDOW);
+            if active.len() >= MAX_ACTIVE_CHATS {
+                if let Some(oldest) = active
+                    .iter()
+                    .min_by_key(|(_, (_, at))| *at)
+                    .map(|(chat, _)| *chat)
+                {
+                    active.remove(&oldest);
+                }
+            }
+        }
+        active.insert(chat_id, (user_id, now));
+    }
+
+    pub(crate) async fn followup_active(&self, chat_id: ChatId, user_id: UserId) -> bool {
+        let mut active = self.last_active.lock().await;
+        let now = time::Instant::now();
+        match active.get(&chat_id).copied() {
+            Some((last_user, at)) if now.duration_since(at) < FOLLOWUP_WINDOW => {
+                last_user == user_id
+            }
+            Some(_) => {
+                active.remove(&chat_id);
+                false
+            }
+            None => false,
         }
     }
 

@@ -94,13 +94,11 @@ async fn reply_with_sticker(bot: &Bot, message: &Message, cfg: &Settings, text: 
     {
         return false;
     }
-    let request = bot.send_sticker(message.chat.id, InputFile::file_id(file_id.clone()));
-    let request = if message.chat.is_private() {
-        request.reply_parameters(ReplyParameters::new(message.id))
-    } else {
-        request
-    };
-    if let Ok(sent) = request.disable_notification(true).await {
+    let request = bot
+        .send_sticker(message.chat.id, InputFile::file_id(file_id.clone()))
+        .reply_parameters(ReplyParameters::new(message.id).allow_sending_without_reply())
+        .disable_notification(true);
+    if let Ok(sent) = request.await {
         let _ = crate::memory::record_message(
             &cfg.database,
             RecordMessage::new(message.chat.id, 0, "максут", "assistant", "[стикер]")
@@ -268,12 +266,27 @@ pub(crate) async fn handle_message(
                         .is_some_and(|name| name.eq_ignore_ascii_case(&cfg.bot_username))
             });
         let private = message.chat.is_private();
-        let prompt = match chat_prompt(text, private, &cfg.bot_username, reply_to_bot) {
-            Some(prompt) => Some(prompt),
-            None if media.is_some() && (private || reply_to_bot) => Some(String::new()),
+        let reply_to_other = message.reply_to_message().is_some() && !reply_to_bot;
+        let addressed = match chat_prompt(text, private, &cfg.bot_username, reply_to_bot) {
+            Some(prompt) => Some((prompt, false)),
+            None if media.is_some() && (private || reply_to_bot) => Some((String::new(), false)),
             None => None,
         };
-        if let Some(prompt) = prompt {
+        let resolved = match addressed {
+            Some(pair) => Some(pair),
+            None if !private && !reply_to_other => {
+                let trimmed = text.trim();
+                let active = match cfg.chat.as_ref() {
+                    Some(chat) if !trimmed.is_empty() || media.is_some() => {
+                        chat.followup_active(message.chat.id, sender.id).await
+                    }
+                    _ => false,
+                };
+                active.then(|| (trimmed.to_owned(), true))
+            }
+            None => None,
+        };
+        if let Some((prompt, followup)) = resolved {
             let image = match media.as_ref() {
                 Some((file_id, mime)) => download_image(&bot, file_id, mime).await,
                 None => None,
@@ -291,6 +304,7 @@ pub(crate) async fn handle_message(
                 owner,
                 prompt: prompt.as_str(),
                 image: image.as_ref(),
+                followup,
             };
             reply_with_chat(&bot, &message, &cfg, &turn).await;
         }
