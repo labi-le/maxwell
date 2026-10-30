@@ -44,7 +44,7 @@ const SYSTEM_PROMPT: &str = "\
 
 const CHAT_TIMEOUT: Duration = Duration::from_secs(40);
 const CHAT_COOLDOWN: Duration = Duration::from_secs(3);
-pub(crate) const FOLLOWUP_WINDOW: Duration = Duration::from_secs(180);
+pub(crate) const FOLLOWUP_WINDOW: Duration = Duration::from_secs(900);
 const MAX_ACTIVE_CHATS: usize = 1024;
 const CHAT_CONCURRENCY: usize = 4;
 const MAX_LLM_BYTES: usize = 64 * 1024;
