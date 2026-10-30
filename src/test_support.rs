@@ -842,6 +842,7 @@ macro_rules! chat_reply {
                 prompt: $prompt,
                 image: $image,
                 followup: false,
+                reply_context: None,
             },
             None,
         )
@@ -864,6 +865,7 @@ macro_rules! chat_reply_with_proposal {
                 prompt: $prompt,
                 image: $image,
                 followup: false,
+                reply_context: None,
             },
             $proposal,
         )

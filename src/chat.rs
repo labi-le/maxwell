@@ -26,7 +26,7 @@ const OWNER_FEATURE_PROMPT: &str = "\
 - если владелец спрашивает, что ждёт подтверждения, сначала вызови feature_confirmation. Решение принимается inline-кнопкой или явной командой владельца (`одобри`/`отклони`/`отмени` + id); не утверждай, что одобрил или отклонил, если инструмент не записал решение.
 - если владелец просит доработать существующий план, вызови propose_feature с refines=<id> и goal=<замечание>; старый план при этом не отклоняется.";
 const FOLLOWUP_PROMPT: &str = "\
-Ты только что отвечал этому собеседнику в групповом чате. В его новой реплике нет твоего имени и нет реплая на твоё сообщение. Посмотри на недавние сообщения и реши: если это продолжение вашего диалога, ответ на твою реплику или уместный повод вставить короткую фразу в разговор — ответь как обычно. Если собеседник обратился к другому человеку, сменил тему не с тобой или тебе нечего добавить — ответь ровно одним словом: PASS";
+Ты уже участвуешь в текущем разговоре в групповом чате. В этой новой реплике нет твоего имени и нет прямого реплая на твоё сообщение (она может быть адресована тебе по смыслу или другому участнику ветки). Посмотри на недавние сообщения: если это продолжение общей темы, развитие шутки или у тебя есть меткая короткая вставка по делу — ответь как обычно в одну-две фразы. Промолчи и ответь ровно одним словом PASS только если реплика совсем про другое, чисто бытовая перекличка не по теме или человек явно тегнул другого участника с личным вопросом.";
 
 /// One inbound chat message plus who sent it.
 pub(crate) struct ChatTurn<'a> {
@@ -38,6 +38,7 @@ pub(crate) struct ChatTurn<'a> {
     pub(crate) prompt: &'a str,
     pub(crate) image: Option<&'a ChatImage>,
     pub(crate) followup: bool,
+    pub(crate) reply_context: Option<&'a str>,
 }
 
 pub(crate) struct ChatReply {
@@ -174,7 +175,7 @@ pub(crate) async fn reply_with_chat(
                     }
                 }
                 if delivered {
-                    chat.note_reply(message.chat.id, turn.user_id).await;
+                    chat.note_reply(message.chat.id).await;
                 }
                 return;
             }
@@ -194,7 +195,7 @@ pub(crate) async fn reply_with_chat(
                 }
             }
             if delivered {
-                chat.note_reply(message.chat.id, turn.user_id).await;
+                chat.note_reply(message.chat.id).await;
             }
         }
         Err(reason) => {
@@ -292,6 +293,10 @@ pub(crate) async fn chat_reply_with_proposal(
             ));
             user_text.push('\n');
         }
+        user_text.push('\n');
+    }
+    if let Some(reply_ctx) = turn.reply_context {
+        user_text.push_str(reply_ctx);
         user_text.push('\n');
     }
     user_text.push_str(&format!(
